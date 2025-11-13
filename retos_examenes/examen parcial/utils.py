@@ -77,60 +77,66 @@ def segment_green(frame):
 
 def process_frame(frame):
 
-    # procesa un frame y devuelve el frame con anotaciones
     out = frame.copy()
     h, w = frame.shape[:2]
 
-    # Segmentar fondo verde (obtener máscara de objetos)
+    # Segmentar fondo verde
     mask = segment_green(frame)
 
     # Extraer contornos de posibles cartas
     card_polys = extract_card_contours(mask)
 
     warps = []
+
     for pts in card_polys:
         try:
+            from recognition import recognize_card
+
+            # Warp de la carta
             warp = four_point_transform(frame, pts, w=WARP_WIDTH, h=WARP_HEIGHT)
             warps.append(warp)
+
+            # Calcular centro del contorno para colocar texto
+            pts_int = pts.reshape((-1,1,2)).astype(int)
+            M = cv2.moments(pts_int)
+            if M["m00"] != 0:
+                cx = int(M["m10"]/M["m00"])
+                cy = int(M["m01"]/M["m00"])
+            else:
+                cx = int(np.mean(pts[:,0]))
+                cy = int(np.mean(pts[:,1]))
+
+            # Dibujar contorno y centro
+            cv2.polylines(out, [pts_int], True, (0, 255, 255), 2)
+            cv2.circle(out, (cx, cy), 4, (0,0,255), -1)
+
+            # Reconocimiento de la carta
+            rank, suit, rs, ss = recognize_card(warp)
+            cv2.putText(out, f'{rank} de {suit}', (cx, cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+
         except Exception as e:
-            # fallback: ignora esta carta si la transformada falla
             print("Warpping failed:", e)
             continue
 
-    # Dibujar contornos detectados en el frame original
-    for pts in card_polys:
-        pts_int = pts.reshape((-1,1,2)).astype(int)
-        cv2.polylines(out, [pts_int], True, (0, 255, 255), 2)
-        # dibujar el centro
-        M = cv2.moments(pts_int)
-        if M["m00"] != 0:
-            cx = int(M["m10"]/M["m00"])
-            cy = int(M["m01"]/M["m00"])
-            cv2.circle(out, (cx, cy), 4, (0,0,255), -1)
-
-    # Crear una columna a la derecha para miniaturas (si hay warps)
+    # Crear columna de miniaturas a la derecha
     if len(warps) > 0:
         thumb_h = WARP_HEIGHT
         thumb_w = WARP_WIDTH
-        # limitar número de miniaturas a lo que quepa en la ventana vertical
         max_thumbs = max(1, h // thumb_h)
-        # componer una imagen vertical con miniaturas (hasta max_thumbs)
         thumbs = np.zeros((h, thumb_w, 3), dtype=np.uint8) + 50  # fondo gris
         for i, wp in enumerate(warps[:max_thumbs]):
             y0 = i * thumb_h
             y1 = y0 + thumb_h
             if y1 > h:
                 break
-            # si el warp tiene distinto tamaño, redimensionar
             wp_small = cv2.resize(wp, (thumb_w, thumb_h))
             thumbs[y0:y1, 0:thumb_w] = wp_small
-
-        # concatenar horizontalmente
         combined = np.hstack((out, thumbs))
     else:
         combined = out
 
-    # Mostrar texto informativo
+    # Texto informativo
     info = f'Cartas detectadas: {len(warps)}'
     cv2.putText(combined, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
 
