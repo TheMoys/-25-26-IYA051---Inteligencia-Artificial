@@ -1,0 +1,64 @@
+# --- Entornos virtuales ---
+venv/
+.env/
+.venv/
+
+# --- Archivos temporales y cachés ---
+__pycache__/
+*.py[cod]
+*.so
+*.log
+*.tmp
+*.bak
+*.swp
+*.DS_Store
+
+# --- Archivos generados por OpenCV / capturas ---
+captures/
+output/
+results/
+*.jpg
+*.png
+*.bmp
+*.tiff
+*.jpeg
+
+# --- Archivos de pruebas ---
+test_*.py
+*_test.py
+
+# --- Archivos de sistema y de entorno ---
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux / Ubuntu
+.Trash-*
+*~
+
+# --- Archivos de IDEs ---
+# VSCode
+.vscode/
+# PyCharm / JetBrains
+.idea/
+# Eclipse / otros
+.project
+.settings/
+.metadata/
+
+# --- Dependencias ---
+# Evita subir los paquetes instalados, solo requirements.txt
+site-packages/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# --- Notebooks (si los llegas a usar) ---
+.ipynb_checkpoints/
+
+# --- Datos grandes opcionales ---
+data/
+datasets/
+videos/
