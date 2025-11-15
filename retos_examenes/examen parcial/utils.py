@@ -90,7 +90,8 @@ def process_frame(frame):
 
     for pts in card_polys:
         try:
-            from recognition import recognize_card
+            from recognition_rank import recognize_rank
+            from recognition_suits import recognize_suit
 
             # Warp de la carta
             warp = four_point_transform(frame, pts, w=WARP_WIDTH, h=WARP_HEIGHT)
@@ -111,7 +112,9 @@ def process_frame(frame):
             cv2.circle(out, (cx, cy), 4, (0,0,255), -1)
 
             # Reconocimiento de la carta
-            rank, suit, rs, ss = recognize_card(warp)
+            rank, rs = recognize_rank(warp)
+            suit, ss = recognize_suit(warp)
+            
             cv2.putText(out, f'{rank} de {suit}', (cx, cy),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
