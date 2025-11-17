@@ -6,6 +6,10 @@ MIN_CARD_AREA = 2000        # area mínima del contorno para considerarlo carta 
 WARP_WIDTH = 300            # ancho del ROI final de la carta
 WARP_HEIGHT = 450           # alto del ROI final de la carta
 
+# Parámetros de visualización
+DISPLAY_WIDTH = 1280        # Ancho estándar del display
+DISPLAY_HEIGHT = 720        # Alto estándar del display
+
 
 def open_video_source(source):
     # Devuelve objeto VideoCapture y flag is_image
@@ -19,6 +23,30 @@ def open_video_source(source):
 
     cap = cv2.VideoCapture(source)
     return cap, False
+
+def resize_to_display(frame, max_width=DISPLAY_WIDTH, max_height=DISPLAY_HEIGHT):
+    """
+    Redimensiona el frame para que quepa en el display manteniendo el aspect ratio
+    """
+    h, w = frame.shape[:2]
+    
+    # Calcular el factor de escala para que quepa en el display
+    scale_w = max_width / w
+    scale_h = max_height / h
+    scale = min(scale_w, scale_h)
+    
+    # Si la imagen ya es más pequeña que el display, no redimensionar
+    if scale >= 1.0:
+        return frame
+    
+    # Calcular nuevas dimensiones
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    
+    # Redimensionar
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    return resized
 
 def order_points(pts):
     # pts: array de 4 puntos (x,y)
@@ -76,7 +104,9 @@ def segment_green(frame):
     return mask_clean
 
 def process_frame(frame):
-
+    # Redimensionar frame si es muy grande
+    frame = resize_to_display(frame)
+    
     out = frame.copy()
     h, w = frame.shape[:2]
 
@@ -115,7 +145,7 @@ def process_frame(frame):
             rank, rs = recognize_rank(warp)
             suit, ss = recognize_suit(warp)
             
-            cv2.putText(out, f'{rank} de {suit}', (cx, cy),
+            cv2.putText(out, f'{rank} de {suit}', (cx-50, cy),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
         except Exception as e:
@@ -142,5 +172,8 @@ def process_frame(frame):
     # Texto informativo
     info = f'Cartas detectadas: {len(warps)}'
     cv2.putText(combined, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
+    
+    # Asegurar que el resultado final también quepa en el display
+    combined = resize_to_display(combined)
 
     return combined
