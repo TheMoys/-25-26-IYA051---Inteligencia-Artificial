@@ -133,8 +133,8 @@ def detect_top_notch(img):
     """
     h, w = img.shape
     
-    # Analizar solo el tercio superior
-    top_section = img[:h//3, :]
+    # Analizar solo el 20% superior (más restrictivo)
+    top_section = img[:int(h*0.2), :]
     
     # Buscar la hendidura: región blanca rodeada de negro
     # Invertir para que el fondo sea blanco
@@ -154,15 +154,19 @@ def detect_top_notch(img):
         height = stats[i, cv2.CC_STAT_HEIGHT]
         area = stats[i, cv2.CC_STAT_AREA]
         
-        # Debe estar en la parte central superior
+        # Debe estar en la parte central superior MUY ESTRICTO
         center_x = x + width / 2
-        is_centered = (w * 0.3) < center_x < (w * 0.7)
-        is_at_top = y < h // 4
+        is_centered = (w * 0.40) < center_x < (w * 0.60)  # MUY centrado
+        is_at_top = y < int(h * 0.08)  # MUY arriba (8% superior)
         
-        # Debe tener cierto tamaño
-        significant_size = area > 20
+        # Debe tener UN ÁREA GRANDE y SER PROFUNDO
+        significant_size = area > 50  # MÁS grande
+        significant_depth = height > 12  # MÁS profundo
         
-        if is_centered and is_at_top and significant_size:
+        # La hendidura debe ser más profunda que ancha (característica única)
+        is_deep_notch = height > width * 1.2
+        
+        if is_centered and is_at_top and significant_size and significant_depth and is_deep_notch:
             notch_found = True
             notch_depth = max(notch_depth, height)
     
@@ -252,7 +256,7 @@ def detect_heart_pattern(img):
         hull_area = cv2.contourArea(hull)
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
-        low_solidity = solidity < 0.88
+        low_solidity = solidity < 0.85  # Baja solidez
     else:
         low_solidity = False
         solidity = 0
@@ -260,12 +264,19 @@ def detect_heart_pattern(img):
     # Característica 6: Ancho vs alto (corazones son más anchos que altos)
     x, y, w_box, h_box = cv2.boundingRect(contours[0]) if contours else (0, 0, 1, 1)
     aspect_ratio = float(w_box) / h_box if h_box != 0 else 0
-    wider_than_tall = aspect_ratio > 0.85
+    wider_than_tall = aspect_ratio > 0.90
     
     # Característica 7: NO debe tener 4 vértices agudos (eso es diamante)
-    epsilon = 0.02 * cv2.arcLength(cnt, True) if contours else 0
-    approx = cv2.approxPolyDP(cnt, epsilon, True) if contours else []
-    not_4_vertices = len(approx) != 4
+    epsilon1 = 0.01 * cv2.arcLength(cnt, True) if contours else 0
+    epsilon2 = 0.02 * cv2.arcLength(cnt, True) if contours else 0
+    epsilon3 = 0.03 * cv2.arcLength(cnt, True) if contours else 0
+    
+    approx1 = cv2.approxPolyDP(cnt, epsilon1, True) if contours else []
+    approx2 = cv2.approxPolyDP(cnt, epsilon2, True) if contours else []
+    approx3 = cv2.approxPolyDP(cnt, epsilon3, True) if contours else []
+    
+    has_4_vertices = (len(approx1) == 4) or (len(approx2) == 4) or (len(approx3) == 4)
+    not_4_vertices = not has_4_vertices
     
     # Debug info
     print(f"    [HEART DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
@@ -274,31 +285,33 @@ def detect_heart_pattern(img):
     print(f"    [HEART DEBUG] Defectos: {defects_count} (max depth: {max_depth:.1f})")
     print(f"    [HEART DEBUG] Solidez: {solidity:.3f} (low: {low_solidity})")
     print(f"    [HEART DEBUG] Aspect ratio: {aspect_ratio:.3f}")
-    print(f"    [HEART DEBUG] Vértices: {len(approx)} (not 4: {not_4_vertices})")
+    print(f"    [HEART DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (not 4: {not_4_vertices})")
     
-    # Score ajustado - más peso a características únicas del corazón
+    # Score ajustado - MUY ESTRICTO
     score = 0.0
     
-    if has_notch:
-        score += 0.40  # MÁXIMA PRIORIDAD: hendidura superior
-    
-    if low_solidity:
-        score += 0.25  # Segunda característica más importante
-    
-    if has_defects:
-        score += 0.15
-    
+    # REQUISITO CRÍTICO: NO debe tener 4 vértices (diferenciador con diamante)
     if not_4_vertices:
-        score += 0.10  # NO es un rombo perfecto
+        score += 0.30  # Base si no es diamante
+        
+        # Ahora sí analizar otras características
+        if has_notch:
+            score += 0.30  # Hendidura es importante
+        
+        if low_solidity:
+            score += 0.20
+        
+        if has_defects:
+            score += 0.10
+        
+        if has_rounded:
+            score += 0.05
+        
+        if has_bottom:
+            score += 0.05
     
-    if has_bottom:
-        score += 0.05
-    
-    if has_rounded:
-        score += 0.05
-    
-    # Condiciones más permisivas: si tiene hendidura O (baja solidez + defectos)
-    is_heart = has_notch or (low_solidity and has_defects)
+    # Condición MUY ESTRICTA: corazón NO puede tener 4 vértices
+    is_heart = not_4_vertices and (has_notch or (low_solidity and has_defects))
     
     return is_heart, score
 
@@ -314,49 +327,61 @@ def detect_diamond_pattern(img):
     
     cnt = max(contours, key=cv2.contourArea)
     
-    # Aproximar polígono
-    epsilon = 0.02 * cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    # Aproximar polígono con diferentes epsilons
+    epsilon1 = 0.01 * cv2.arcLength(cnt, True)
+    epsilon2 = 0.02 * cv2.arcLength(cnt, True)
+    epsilon3 = 0.03 * cv2.arcLength(cnt, True)
     
-    # DEBE tener exactamente 4 vértices
-    has_4_vertices = len(approx) == 4
+    approx1 = cv2.approxPolyDP(cnt, epsilon1, True)
+    approx2 = cv2.approxPolyDP(cnt, epsilon2, True)
+    approx3 = cv2.approxPolyDP(cnt, epsilon3, True)
     
-    # Calcular aspect ratio
-    x, y, w_box, h_box = cv2.boundingRect(cnt)
-    aspect_ratio = float(w_box) / h_box if h_box != 0 else 0
-    is_square = 0.85 < aspect_ratio < 1.15
+    # CARACTERÍSTICA CLAVE: Debe tener 4 vértices (probar con diferentes aproximaciones)
+    has_4_vertices = (len(approx1) == 4) or (len(approx2) == 4) or (len(approx3) == 4)
     
-    # Calcular solidez (DEBE ser muy alta)
+    # Calcular solidez (diamante DEBE tener MUY alta solidez)
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     area = cv2.contourArea(cnt)
     solidity = float(area) / hull_area if hull_area != 0 else 0
-    very_high_solidity = solidity > 0.92  # Más estricto
+    very_high_solidity = solidity > 0.90  # MUY alta solidez
     
-    # DEBE tener pocos defectos
+    # Debe tener MUY pocos defectos
     defects_count, max_depth, _ = analyze_convexity_defects(img)
-    very_few_defects = defects_count <= 1  # Más estricto
+    very_few_defects = defects_count <= 1  # Casi ninguno
     
-    # NO debe tener hendidura
-    has_notch, _ = detect_top_notch(img)
-    no_notch = not has_notch
+    # NO debe tener lóbulos redondeados (eso es corazón)
+    has_rounded = detect_rounded_top(img)
+    no_rounded = not has_rounded
     
-    # Score - solo si cumple TODOS los criterios principales
+    # Verificar hendidura (MENOS PRIORITARIO que 4 vértices + solidez)
+    has_notch, notch_depth = detect_top_notch(img)
+    
+    # Debug
+    print(f"    [DIAMOND DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (4: {has_4_vertices})")
+    print(f"    [DIAMOND DEBUG] Solidez: {solidity:.3f} (very high: {very_high_solidity})")
+    print(f"    [DIAMOND DEBUG] Defectos: {defects_count} (very few: {very_few_defects})")
+    print(f"    [DIAMOND DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
+    print(f"    [DIAMOND DEBUG] Sin lóbulos: {no_rounded}")
+    
+    # Score - PRIORIDAD ABSOLUTA a 4 vértices + alta solidez
     score = 0.0
     
-    if has_4_vertices and very_high_solidity and very_few_defects and no_notch:
-        score += 0.40  # Base alta si cumple todo
+    # Si tiene 4 vértices + alta solidez + pocos defectos = ES DIAMANTE
+    if has_4_vertices and very_high_solidity and very_few_defects:
+        score += 0.70  # MÁXIMA PRIORIDAD
         
-        if is_square:
-            score += 0.30
+        if no_rounded:
+            score += 0.15
         
-        if has_4_vertices:
-            score += 0.20
-        
-        if very_few_defects:
+        if not has_notch:  # Bonus si NO tiene hendidura
             score += 0.10
+        
+        if solidity > 0.93:  # Bonus por solidez muy alta
+            score += 0.05
     
-    is_diamond = (has_4_vertices and very_high_solidity and very_few_defects and no_notch)
+    # Diamante SI Y SOLO SI tiene 4 vértices + muy alta solidez + muy pocos defectos
+    is_diamond = (has_4_vertices and very_high_solidity and very_few_defects)
     
     return is_diamond, score
 
@@ -589,6 +614,7 @@ def classify_suit_by_pattern(img, color):
         print(f"  [PATTERN] Diamante: {is_diamond} (score: {diamond_score:.3f})")
         print(f"  [PATTERN] Corazón: {is_heart} (score: {heart_score:.3f})")
         
+        # IMPORTANTE: Devolver basándose en el score más alto
         if diamond_score > heart_score:
             return 'diamonds', diamond_score
         else:
