@@ -246,9 +246,9 @@ def detect_heart_pattern(img):
     
     # Característica 4: Defectos de convexidad
     defects_count, max_depth, defect_depths = analyze_convexity_defects(img)
-    has_defects = defects_count >= 2 and max_depth > 6
+    has_some_defects = defects_count >= 1  # Más permisivo
     
-    # Característica 5: Solidez baja (por la hendidura)
+    # Característica 5: Solidez media-baja (por la hendidura)
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cnt = max(contours, key=cv2.contourArea)
@@ -256,17 +256,12 @@ def detect_heart_pattern(img):
         hull_area = cv2.contourArea(hull)
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
-        low_solidity = solidity < 0.85  # Baja solidez
+        medium_low_solidity = solidity < 0.93  # Más permisivo
     else:
-        low_solidity = False
+        medium_low_solidity = False
         solidity = 0
     
-    # Característica 6: Ancho vs alto (corazones son más anchos que altos)
-    x, y, w_box, h_box = cv2.boundingRect(contours[0]) if contours else (0, 0, 1, 1)
-    aspect_ratio = float(w_box) / h_box if h_box != 0 else 0
-    wider_than_tall = aspect_ratio > 0.90
-    
-    # Característica 7: NO debe tener 4 vértices agudos (eso es diamante)
+    # Característica 6: Verificar 4 vértices
     epsilon1 = 0.01 * cv2.arcLength(cnt, True) if contours else 0
     epsilon2 = 0.02 * cv2.arcLength(cnt, True) if contours else 0
     epsilon3 = 0.03 * cv2.arcLength(cnt, True) if contours else 0
@@ -276,42 +271,49 @@ def detect_heart_pattern(img):
     approx3 = cv2.approxPolyDP(cnt, epsilon3, True) if contours else []
     
     has_4_vertices = (len(approx1) == 4) or (len(approx2) == 4) or (len(approx3) == 4)
-    not_4_vertices = not has_4_vertices
     
     # Debug info
     print(f"    [HEART DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
     print(f"    [HEART DEBUG] Lóbulos redondeados: {has_rounded}")
     print(f"    [HEART DEBUG] Punta inferior: {has_bottom} (strength: {point_strength})")
     print(f"    [HEART DEBUG] Defectos: {defects_count} (max depth: {max_depth:.1f})")
-    print(f"    [HEART DEBUG] Solidez: {solidity:.3f} (low: {low_solidity})")
-    print(f"    [HEART DEBUG] Aspect ratio: {aspect_ratio:.3f}")
-    print(f"    [HEART DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (not 4: {not_4_vertices})")
+    print(f"    [HEART DEBUG] Solidez: {solidity:.3f} (medium-low: {medium_low_solidity})")
+    print(f"    [HEART DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (4: {has_4_vertices})")
     
-    # Score ajustado - MUY ESTRICTO
+    # Score ajustado - DOS CAMINOS
     score = 0.0
     
-    # REQUISITO CRÍTICO: NO debe tener 4 vértices (diferenciador con diamante)
-    if not_4_vertices:
-        score += 0.30  # Base si no es diamante
+    # CAMINO 1: Si tiene hendidura (característica única del corazón)
+    if has_notch and notch_depth > 15:
+        score += 0.50  # MÁXIMA PRIORIDAD a hendidura profunda
         
-        # Ahora sí analizar otras características
-        if has_notch:
-            score += 0.30  # Hendidura es importante
-        
-        if low_solidity:
+        if medium_low_solidity:
             score += 0.20
         
-        if has_defects:
+        if not has_4_vertices:
+            score += 0.15  # Bonus si NO es rombo perfecto
+        
+        if has_some_defects:
             score += 0.10
         
         if has_rounded:
             score += 0.05
-        
-        if has_bottom:
-            score += 0.05
     
-    # Condición MUY ESTRICTA: corazón NO puede tener 4 vértices
-    is_heart = not_4_vertices and (has_notch or (low_solidity and has_defects))
+    # CAMINO 2: Si NO tiene 4 vértices + otras características
+    elif not has_4_vertices and medium_low_solidity:
+        score += 0.35
+        
+        if has_some_defects:
+            score += 0.20
+        
+        if has_notch:
+            score += 0.15
+        
+        if has_rounded:
+            score += 0.10
+    
+    # Es corazón SI tiene hendidura profunda O (no 4 vértices + solidez media-baja)
+    is_heart = (has_notch and notch_depth > 15) or (not has_4_vertices and medium_low_solidity and has_some_defects)
     
     return is_heart, score
 
