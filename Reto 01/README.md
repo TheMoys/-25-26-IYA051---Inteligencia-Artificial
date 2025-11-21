@@ -16,5 +16,3 @@ Cada alumno deberá:
 
 5) En base a tu definición de "Inteligencia artificial", pon varios ejemplos de sistemas que tengan "inteligencia artificial" (ejemplos que abarquen todo el rango de lo que tú creas que puede tener "inteligencia artificial").
 
-
-# [Se podrán publicar respuestas hasta 27 de Octubre] (2ª oportunidad para alumnos que no respondieron en su día cuando se planteó en el Foro "Preguntas y Respuestas" del Campus Virtual)
