@@ -129,44 +129,44 @@ def analyze_convexity_defects(img):
 
 def detect_top_notch(img):
     """
-    Detecta específicamente la hendidura superior característica del corazón
+    Detecta hendidura superior - MUY PERMISIVA para corazones pequeños
     """
     h, w = img.shape
     
-    # Analizar solo el 20% superior (más restrictivo)
-    top_section = img[:int(h*0.2), :]
+    # Analizar el 30% superior
+    top_section = img[:int(h*0.30), :]
     
-    # Buscar la hendidura: región blanca rodeada de negro
-    # Invertir para que el fondo sea blanco
+    # Buscar la hendidura
     top_inverted = cv2.bitwise_not(top_section)
-    
-    # Encontrar componentes conectados (regiones blancas)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(top_inverted, connectivity=8)
     
-    # Buscar una región blanca en el centro superior (la hendidura)
     notch_found = False
     notch_depth = 0
     
-    for i in range(1, num_labels):  # Ignorar fondo
+    for i in range(1, num_labels):
         x = stats[i, cv2.CC_STAT_LEFT]
         y = stats[i, cv2.CC_STAT_TOP]
         width = stats[i, cv2.CC_STAT_WIDTH]
         height = stats[i, cv2.CC_STAT_HEIGHT]
         area = stats[i, cv2.CC_STAT_AREA]
         
-        # Debe estar en la parte central superior MUY ESTRICTO
         center_x = x + width / 2
-        is_centered = (w * 0.40) < center_x < (w * 0.60)  # MUY centrado
-        is_at_top = y < int(h * 0.08)  # MUY arriba (8% superior)
         
-        # Debe tener UN ÁREA GRANDE y SER PROFUNDO
-        significant_size = area > 50  # MÁS grande
-        significant_depth = height > 12  # MÁS profundo
+        # CRITERIOS MUY RELAJADOS
+        is_centered = (w * 0.25) < center_x < (w * 0.75)  # Rango amplio
+        is_at_top = y < int(h * 0.18)  # Más abajo
         
-        # La hendidura debe ser más profunda que ancha (característica única)
-        is_deep_notch = height > width * 1.2
+        # Tamaños adaptativos
+        min_area = max(15, w * h * 0.008)  # Al menos 0.8% del área O 15 píxeles
+        min_depth = max(4, h * 0.06)  # Al menos 6% de altura O 4 píxeles
         
-        if is_centered and is_at_top and significant_size and significant_depth and is_deep_notch:
+        significant_size = area > min_area
+        significant_depth = height > min_depth
+        
+        # Muy permisivo con la forma
+        is_notch_shape = height > width * 0.4  # Solo que sea algo vertical
+        
+        if is_centered and is_at_top and significant_size and significant_depth and is_notch_shape:
             notch_found = True
             notch_depth = max(notch_depth, height)
     
@@ -231,21 +231,22 @@ def detect_bottom_point(img):
 
 def detect_heart_pattern(img):
     """
-    Detecta específicamente el patrón de corazón con características únicas
+    Detecta corazón - MEJORADO para múltiples tamaños
     """
     h, w = img.shape
     
-    # Característica 1: Hendidura superior (CRÍTICA para corazones)
+    # Característica 1: Hendidura
     has_notch, notch_depth = detect_top_notch(img)
     
     # Característica 2: Lóbulos redondeados
     has_rounded = detect_rounded_top(img)
     
-    # Característica 3: Defectos de convexidad
+    # Característica 3: Defectos
     defects_count, max_depth, defect_depths = analyze_convexity_defects(img)
+    has_some_defects = defects_count >= 1
     has_defects = defects_count >= 2
     
-    # Característica 4: Solidez baja (por la hendidura)
+    # Característica 4: Solidez
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cnt = max(contours, key=cv2.contourArea)
@@ -254,53 +255,86 @@ def detect_heart_pattern(img):
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
         low_solidity = solidity < 0.88
+        medium_solidity = solidity < 0.91
     else:
         low_solidity = False
+        medium_solidity = False
         solidity = 0
     
-    # Característica 5: Verificar 4 vértices
+    # Característica 5: Vértices
     epsilon2 = 0.02 * cv2.arcLength(cnt, True) if contours else 0
     approx = cv2.approxPolyDP(cnt, epsilon2, True) if contours else []
     has_4_vertices = len(approx) == 4
     
+    # Característica 6: Forma general (corazones tienden a ser más anchos)
+    x, y, w_box, h_box = cv2.boundingRect(cnt) if contours else (0, 0, 1, 1)
+    aspect_ratio = float(w_box) / h_box if h_box != 0 else 0
+    wider_shape = aspect_ratio > 0.80
+    
     # Debug
     print(f"    [HEART DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
-    print(f"    [HEART DEBUG] Lóbulos: {has_rounded}")
-    print(f"    [HEART DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
-    print(f"    [HEART DEBUG] 4 vértices: {has_4_vertices}")
+    print(f"    [HEART DEBUG] Lóbulos: {has_rounded}, Solidez: {solidity:.3f}")
+    print(f"    [HEART DEBUG] Defectos: {defects_count}, 4v: {has_4_vertices}, Aspect: {aspect_ratio:.2f}")
     
-    # Score - REQUIERE hendidura profunda O (baja solidez + NO 4 vértices)
+    # Score con CINCO CAMINOS (muy flexible)
     score = 0.0
     
-    # CAMINO 1: Hendidura profunda (característica única)
-    if has_notch and notch_depth > 15:
-        score += 0.60
-        if low_solidity:
-            score += 0.20
-        if has_defects:
-            score += 0.10
-        if not has_4_vertices:
-            score += 0.10
+    # CAMINO 1: Hendidura profunda (>12)
+    if has_notch and notch_depth > 12:
+        score = 0.50
+        if low_solidity: score += 0.20
+        if has_defects: score += 0.10
+        if not has_4_vertices: score += 0.10
+        if wider_shape: score += 0.05
+        if has_rounded: score += 0.05
     
-    # CAMINO 2: Sin 4 vértices + baja solidez + defectos
-    elif not has_4_vertices and low_solidity and has_defects:
-        score += 0.40
-        if has_rounded:
-            score += 0.20
+    # CAMINO 2: Hendidura moderada (8-12)
+    elif has_notch and notch_depth > 8:
+        score = 0.35
+        if medium_solidity: score += 0.20
+        if has_some_defects: score += 0.15
+        if not has_4_vertices: score += 0.15
+        if wider_shape: score += 0.10
+        if has_rounded: score += 0.05
     
-    # Corazón SOLO SI: hendidura profunda O (no 4 vértices + baja solidez + defectos)
-    is_heart = (has_notch and notch_depth > 15) or (not has_4_vertices and low_solidity and has_defects)
+    # CAMINO 3: Hendidura leve (5-8) + otras características
+    elif has_notch and notch_depth > 5:
+        score = 0.25
+        if medium_solidity: score += 0.20
+        if has_some_defects: score += 0.20
+        if not has_4_vertices: score += 0.15
+        if wider_shape: score += 0.10
+        if has_rounded: score += 0.10
     
-    # Si tiene 4 vértices perfectos, NO puede ser corazón
-    if has_4_vertices and solidity > 0.90:
+    # CAMINO 4: Sin hendidura pero claramente corazón
+    elif not has_4_vertices and medium_solidity and has_some_defects:
+        score = 0.30
+        if wider_shape: score += 0.20
+        if has_rounded: score += 0.15
+        if low_solidity: score += 0.15
+    
+    # CAMINO 5: Por forma general
+    elif medium_solidity and wider_shape and not has_4_vertices:
+        score = 0.25
+        if has_some_defects: score += 0.20
+        if has_rounded: score += 0.15
+    
+    # Condición SUPER permisiva
+    is_heart = (has_notch and notch_depth > 5) or \
+               (not has_4_vertices and medium_solidity and has_some_defects) or \
+               (medium_solidity and wider_shape and not has_4_vertices)
+    
+    # BLOQUEO ESTRICTO: Solo si es claramente diamante perfecto
+    if has_4_vertices and solidity > 0.92 and defects_count == 0 and not has_notch:
         score = 0.0
         is_heart = False
+        print(f"    [HEART DEBUG] BLOQUEADO: Diamante perfecto")
     
     return is_heart, score
 
 def detect_diamond_pattern(img):
     """
-    Detecta específicamente el patrón de diamante
+    Detecta específicamente el patrón de diamante - MÁS ESTRICTO
     """
     h, w = img.shape
     
@@ -315,40 +349,59 @@ def detect_diamond_pattern(img):
     approx = cv2.approxPolyDP(cnt, epsilon, True)
     has_4_vertices = len(approx) == 4
     
+    # CRITERIO CRÍTICO: Debe tener EXACTAMENTE 4 vértices
+    if not has_4_vertices:
+        print(f"    [DIAMOND DEBUG] RECHAZADO: No tiene 4 vértices (tiene {len(approx)})")
+        return False, 0.0
+    
     # Calcular solidez (diamante tiene ALTA solidez)
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     area = cv2.contourArea(cnt)
     solidity = float(area) / hull_area if hull_area != 0 else 0
-    high_solidity = solidity > 0.88
+    high_solidity = solidity > 0.90  # MÁS ESTRICTO (antes 0.88)
     
-    # Debe tener pocos defectos
+    # Debe tener MUY POCOS o NINGÚN defecto
     defects_count, max_depth, _ = analyze_convexity_defects(img)
-    few_defects = defects_count <= 2
+    very_few_defects = defects_count <= 1  # MÁS ESTRICTO (antes 2)
     
-    # NO debe tener hendidura profunda
+    # NO debe tener hendidura
     has_notch, notch_depth = detect_top_notch(img)
-    no_deep_notch = notch_depth < 15
+    no_notch = notch_depth < 10  # MÁS ESTRICTO (antes 15)
     
     # Debug
     print(f"    [DIAMOND DEBUG] 4 vértices: {has_4_vertices} (total: {len(approx)})")
-    print(f"    [DIAMOND DEBUG] Solidez: {solidity:.3f} (high: {high_solidity})")
-    print(f"    [DIAMOND DEBUG] Defectos: {defects_count}, Hendidura: {notch_depth}")
+    print(f"    [DIAMOND DEBUG] Solidez: {solidity:.3f} (req: >0.90)")
+    print(f"    [DIAMOND DEBUG] Defectos: {defects_count} (req: ≤1)")
+    print(f"    [DIAMOND DEBUG] Hendidura: {notch_depth} (req: <10)")
     
-    # Score - REQUIERE 4 vértices + alta solidez
+    # Score - REQUIERE TODO
     score = 0.0
     
-    if has_4_vertices and high_solidity and few_defects and no_deep_notch:
-        score += 0.70  # Base
-        if solidity > 0.92:
+    # CRITERIOS OBLIGATORIOS
+    if has_4_vertices and high_solidity and very_few_defects and no_notch:
+        score = 0.70  # Base
+        
+        # Bonuses
+        if solidity > 0.93:
             score += 0.15
         if defects_count == 0:
             score += 0.10
         if notch_depth == 0:
             score += 0.05
+        
+        print(f"    [DIAMOND DEBUG] ✓ Todos los criterios cumplidos, score: {score:.3f}")
+    else:
+        # Mostrar qué falló
+        failed = []
+        if not has_4_vertices: failed.append("4 vértices")
+        if not high_solidity: failed.append(f"solidez alta ({solidity:.3f}<0.90)")
+        if not very_few_defects: failed.append(f"pocos defectos ({defects_count}>1)")
+        if not no_notch: failed.append(f"sin hendidura ({notch_depth}≥10)")
+        print(f"    [DIAMOND DEBUG] ✗ RECHAZADO por: {', '.join(failed)}")
     
-    # Diamante SOLO SI: 4 vértices + alta solidez + pocos defectos + sin hendidura profunda
-    is_diamond = (has_4_vertices and high_solidity and few_defects and no_deep_notch)
+    # Diamante SOLO SI cumple TODOS los criterios
+    is_diamond = (has_4_vertices and high_solidity and very_few_defects and no_notch)
     
     return is_diamond, score
 
@@ -515,33 +568,51 @@ def detect_club_pattern(img):
 def classify_suit_by_pattern(img, color):
     """
     Clasifica el palo usando detección de patrones específicos
+    VERSIÓN MEJORADA: Devuelve TODOS los scores, no solo el mejor
     """
     if color == 'red':
-        # Detectar diamante y corazón
+        # Detectar AMBOS palos rojos
         is_diamond, diamond_score = detect_diamond_pattern(img)
         is_heart, heart_score = detect_heart_pattern(img)
         
         print(f"  [PATTERN] Diamante: {is_diamond} (score: {diamond_score:.3f})")
         print(f"  [PATTERN] Corazón: {is_heart} (score: {heart_score:.3f})")
         
-        # IMPORTANTE: Devolver basándose en el score más alto
+        # NUEVO: Retornar scores individuales
+        scores = {
+            'diamonds': diamond_score,
+            'hearts': heart_score
+        }
+        
+        # Determinar el mejor
         if diamond_score > heart_score:
-            return 'diamonds', diamond_score
+            best = 'diamonds'
         else:
-            return 'hearts', heart_score
+            best = 'hearts'
+        
+        return best, scores
             
     else:  # black
-        # Detectar pica y trébol
+        # Detectar AMBOS palos negros
         is_spade, spade_score = detect_spade_pattern(img)
         is_club, club_score = detect_club_pattern(img)
         
         print(f"  [PATTERN] Pica: {is_spade} (score: {spade_score:.3f})")
         print(f"  [PATTERN] Trébol: {is_club} (score: {club_score:.3f})")
         
+        # NUEVO: Retornar scores individuales
+        scores = {
+            'spades': spade_score,
+            'clubs': club_score
+        }
+        
+        # Determinar el mejor
         if club_score > spade_score:
-            return 'clubs', club_score
+            best = 'clubs'
         else:
-            return 'spades', spade_score
+            best = 'spades'
+        
+        return best, scores
 
 def match_template_multi_method(img, template):
     """
@@ -571,52 +642,77 @@ def match_template_multi_method(img, template):
 def match_suit_by_color(img, color):
     """
     Combina detección de patrones con template matching
+    VERSIÓN MEJORADA: Usa scores individuales para cada palo
     """
     # PASO 1: Detección por patrones geométricos (90% peso)
-    suit_by_pattern, pattern_score = classify_suit_by_pattern(img, color)
+    best_by_pattern, pattern_scores = classify_suit_by_pattern(img, color)
     
-    print(f"  Clasificación por patrón: {suit_by_pattern} (score: {pattern_score:.3f})")
+    print(f"  Clasificación por patrón: {best_by_pattern}")
+    print(f"  Scores de patrón: {pattern_scores}")
     
-    # PASO 2: Template matching (10% peso, solo confirmación)
+    # PASO 2: Template matching (10% peso)
     templates = SUIT_TEMPLATES.get(color, {})
     template_scores = {}
     
     for name, tmpl in templates.items():
         score = match_template_multi_method(img, tmpl)
-        template_scores[name] = score
+        # Extraer nombre base (por si tiene sufijos como 'hearts_alt')
+        base_name = name.split('_')[0]
+        if base_name not in template_scores or score > template_scores[base_name]:
+            template_scores[base_name] = score
     
-    # Combinar scores (90% patrón, 10% template)
+    print(f"  Scores de template: {template_scores}")
+    
+    # PASO 3: Combinar scores (90% patrón, 10% template)
     final_scores = {}
-    for name in template_scores.keys():
-        pattern_score_for_name = pattern_score if name == suit_by_pattern or name.startswith(suit_by_pattern) else 0.0
-        temp_score = template_scores[name]
-        final_scores[name] = 0.90 * pattern_score_for_name + 0.10 * temp_score
     
+    # Para cada palo posible según el color
+    possible_suits = ['diamonds', 'hearts'] if color == 'red' else ['spades', 'clubs']
+    
+    for suit in possible_suits:
+        pattern_score = pattern_scores.get(suit, 0.0)
+        template_score = template_scores.get(suit, 0.0)
+        
+        # Combinar: 90% patrón + 10% template
+        final_score = 0.90 * pattern_score + 0.10 * template_score
+        final_scores[suit] = final_score
+        
+        print(f"  [{suit}] Final: {final_score:.3f} (pattern: {pattern_score:.3f}, template: {template_score:.3f})")
+    
+    # Elegir el mejor
     if final_scores:
         best_suit = max(final_scores, key=final_scores.get)
         best_score = final_scores[best_suit]
         return best_suit, best_score, final_scores
     
-    return suit_by_pattern, pattern_score, {suit_by_pattern: pattern_score}
+    return best_by_pattern, pattern_scores.get(best_by_pattern, 0.0), pattern_scores
 
 def recognize_suit(warp):
     """
     Reconoce el palo de una carta desde su imagen warpeada
     """
-    suit_roi = warp[100:170, 10:60]
+    cv2.imwrite("debug_suit_warp_full.png", warp)
     
-    # PASO 1: Determinar color
-    is_red = is_red_suit(suit_roi)
-    color = 'red' if is_red else 'black'
+    suit_roi = warp[100:170, 10:60]
+    cv2.imwrite("debug_suit_roi_original.png", suit_roi)
+    
+    debug_warp = warp.copy()
+    cv2.rectangle(debug_warp, (10, 100), (60, 170), (0, 255, 0), 2)
+    cv2.imwrite("debug_suit_roi_location.png", debug_warp)
     
     print(f"\n--- Detectando palo ---")
+    print(f"Tamaño carta warpeada: {warp.shape}")
+    print(f"ROI extraído: [100:170, 10:60] = {suit_roi.shape}")
+    
+    # Determinar color
+    is_red = is_red_suit(suit_roi)
+    color = 'red' if is_red else 'black'
     print(f"Color detectado: {'ROJO' if is_red else 'NEGRO'}")
     
-    # Convertir a escala de grises y binarizar
+    # Preprocesar
     suit_gray = cv2.cvtColor(suit_roi, cv2.COLOR_BGR2GRAY)
     _, suit_bin = cv2.threshold(suit_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Limpiar ruido
     kernel = np.ones((3,3), np.uint8)
     suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_OPEN, kernel, iterations=2)
     suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_CLOSE, kernel, iterations=3)
@@ -629,14 +725,12 @@ def recognize_suit(warp):
         cv2.drawContours(mask, [largest_contour], -1, 255, -1)
         suit_bin = cv2.bitwise_and(suit_bin, mask)
     
-    # Redimensionar
     suit_bin = cv2.resize(suit_bin, (70, 70))
     
-    # PASO 2: Reconocimiento con múltiples rotaciones
+    # Reconocimiento con rotaciones
     best_suit_name = None
     best_suit_score = -1
     best_angle = 0
-    all_results = {}
     
     for angle in [0, 90, 180, 270]:
         print(f"\n=== Rotación {angle}° ===")
@@ -648,7 +742,6 @@ def recognize_suit(warp):
         
         suit_name, suit_score, scores_dict = match_suit_by_color(suit_rotated, color)
         
-        all_results[angle] = scores_dict
         print(f"  Resultado: {suit_name} (score: {suit_score:.3f})")
         
         if suit_score > best_suit_score:
