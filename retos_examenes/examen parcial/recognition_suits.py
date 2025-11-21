@@ -235,20 +235,17 @@ def detect_heart_pattern(img):
     """
     h, w = img.shape
     
-    # Característica 1: Hendidura superior (MUY IMPORTANTE para corazones)
+    # Característica 1: Hendidura superior (CRÍTICA para corazones)
     has_notch, notch_depth = detect_top_notch(img)
     
     # Característica 2: Lóbulos redondeados
     has_rounded = detect_rounded_top(img)
     
-    # Característica 3: Punta inferior centrada
-    has_bottom, point_strength = detect_bottom_point(img)
-    
-    # Característica 4: Defectos de convexidad
+    # Característica 3: Defectos de convexidad
     defects_count, max_depth, defect_depths = analyze_convexity_defects(img)
-    has_some_defects = defects_count >= 1  # Más permisivo
+    has_defects = defects_count >= 2
     
-    # Característica 5: Solidez media-baja (por la hendidura)
+    # Característica 4: Solidez baja (por la hendidura)
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cnt = max(contours, key=cv2.contourArea)
@@ -256,64 +253,48 @@ def detect_heart_pattern(img):
         hull_area = cv2.contourArea(hull)
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
-        medium_low_solidity = solidity < 0.93  # Más permisivo
+        low_solidity = solidity < 0.88
     else:
-        medium_low_solidity = False
+        low_solidity = False
         solidity = 0
     
-    # Característica 6: Verificar 4 vértices
-    epsilon1 = 0.01 * cv2.arcLength(cnt, True) if contours else 0
+    # Característica 5: Verificar 4 vértices
     epsilon2 = 0.02 * cv2.arcLength(cnt, True) if contours else 0
-    epsilon3 = 0.03 * cv2.arcLength(cnt, True) if contours else 0
+    approx = cv2.approxPolyDP(cnt, epsilon2, True) if contours else []
+    has_4_vertices = len(approx) == 4
     
-    approx1 = cv2.approxPolyDP(cnt, epsilon1, True) if contours else []
-    approx2 = cv2.approxPolyDP(cnt, epsilon2, True) if contours else []
-    approx3 = cv2.approxPolyDP(cnt, epsilon3, True) if contours else []
-    
-    has_4_vertices = (len(approx1) == 4) or (len(approx2) == 4) or (len(approx3) == 4)
-    
-    # Debug info
+    # Debug
     print(f"    [HEART DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
-    print(f"    [HEART DEBUG] Lóbulos redondeados: {has_rounded}")
-    print(f"    [HEART DEBUG] Punta inferior: {has_bottom} (strength: {point_strength})")
-    print(f"    [HEART DEBUG] Defectos: {defects_count} (max depth: {max_depth:.1f})")
-    print(f"    [HEART DEBUG] Solidez: {solidity:.3f} (medium-low: {medium_low_solidity})")
-    print(f"    [HEART DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (4: {has_4_vertices})")
+    print(f"    [HEART DEBUG] Lóbulos: {has_rounded}")
+    print(f"    [HEART DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
+    print(f"    [HEART DEBUG] 4 vértices: {has_4_vertices}")
     
-    # Score ajustado - DOS CAMINOS
+    # Score - REQUIERE hendidura profunda O (baja solidez + NO 4 vértices)
     score = 0.0
     
-    # CAMINO 1: Si tiene hendidura (característica única del corazón)
+    # CAMINO 1: Hendidura profunda (característica única)
     if has_notch and notch_depth > 15:
-        score += 0.50  # MÁXIMA PRIORIDAD a hendidura profunda
-        
-        if medium_low_solidity:
+        score += 0.60
+        if low_solidity:
             score += 0.20
-        
+        if has_defects:
+            score += 0.10
         if not has_4_vertices:
-            score += 0.15  # Bonus si NO es rombo perfecto
-        
-        if has_some_defects:
             score += 0.10
-        
-        if has_rounded:
-            score += 0.05
     
-    # CAMINO 2: Si NO tiene 4 vértices + otras características
-    elif not has_4_vertices and medium_low_solidity:
-        score += 0.35
-        
-        if has_some_defects:
+    # CAMINO 2: Sin 4 vértices + baja solidez + defectos
+    elif not has_4_vertices and low_solidity and has_defects:
+        score += 0.40
+        if has_rounded:
             score += 0.20
-        
-        if has_notch:
-            score += 0.15
-        
-        if has_rounded:
-            score += 0.10
     
-    # Es corazón SI tiene hendidura profunda O (no 4 vértices + solidez media-baja)
-    is_heart = (has_notch and notch_depth > 15) or (not has_4_vertices and medium_low_solidity and has_some_defects)
+    # Corazón SOLO SI: hendidura profunda O (no 4 vértices + baja solidez + defectos)
+    is_heart = (has_notch and notch_depth > 15) or (not has_4_vertices and low_solidity and has_defects)
+    
+    # Si tiene 4 vértices perfectos, NO puede ser corazón
+    if has_4_vertices and solidity > 0.90:
+        score = 0.0
+        is_heart = False
     
     return is_heart, score
 
@@ -329,61 +310,45 @@ def detect_diamond_pattern(img):
     
     cnt = max(contours, key=cv2.contourArea)
     
-    # Aproximar polígono con diferentes epsilons
-    epsilon1 = 0.01 * cv2.arcLength(cnt, True)
-    epsilon2 = 0.02 * cv2.arcLength(cnt, True)
-    epsilon3 = 0.03 * cv2.arcLength(cnt, True)
+    # Aproximar con epsilon medio
+    epsilon = 0.02 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    has_4_vertices = len(approx) == 4
     
-    approx1 = cv2.approxPolyDP(cnt, epsilon1, True)
-    approx2 = cv2.approxPolyDP(cnt, epsilon2, True)
-    approx3 = cv2.approxPolyDP(cnt, epsilon3, True)
-    
-    # CARACTERÍSTICA CLAVE: Debe tener 4 vértices (probar con diferentes aproximaciones)
-    has_4_vertices = (len(approx1) == 4) or (len(approx2) == 4) or (len(approx3) == 4)
-    
-    # Calcular solidez (diamante DEBE tener MUY alta solidez)
+    # Calcular solidez (diamante tiene ALTA solidez)
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     area = cv2.contourArea(cnt)
     solidity = float(area) / hull_area if hull_area != 0 else 0
-    very_high_solidity = solidity > 0.90  # MUY alta solidez
+    high_solidity = solidity > 0.88
     
-    # Debe tener MUY pocos defectos
+    # Debe tener pocos defectos
     defects_count, max_depth, _ = analyze_convexity_defects(img)
-    very_few_defects = defects_count <= 1  # Casi ninguno
+    few_defects = defects_count <= 2
     
-    # NO debe tener lóbulos redondeados (eso es corazón)
-    has_rounded = detect_rounded_top(img)
-    no_rounded = not has_rounded
-    
-    # Verificar hendidura (MENOS PRIORITARIO que 4 vértices + solidez)
+    # NO debe tener hendidura profunda
     has_notch, notch_depth = detect_top_notch(img)
+    no_deep_notch = notch_depth < 15
     
     # Debug
-    print(f"    [DIAMOND DEBUG] Vértices: eps1={len(approx1)}, eps2={len(approx2)}, eps3={len(approx3)} (4: {has_4_vertices})")
-    print(f"    [DIAMOND DEBUG] Solidez: {solidity:.3f} (very high: {very_high_solidity})")
-    print(f"    [DIAMOND DEBUG] Defectos: {defects_count} (very few: {very_few_defects})")
-    print(f"    [DIAMOND DEBUG] Hendidura: {has_notch} (depth: {notch_depth})")
-    print(f"    [DIAMOND DEBUG] Sin lóbulos: {no_rounded}")
+    print(f"    [DIAMOND DEBUG] 4 vértices: {has_4_vertices} (total: {len(approx)})")
+    print(f"    [DIAMOND DEBUG] Solidez: {solidity:.3f} (high: {high_solidity})")
+    print(f"    [DIAMOND DEBUG] Defectos: {defects_count}, Hendidura: {notch_depth}")
     
-    # Score - PRIORIDAD ABSOLUTA a 4 vértices + alta solidez
+    # Score - REQUIERE 4 vértices + alta solidez
     score = 0.0
     
-    # Si tiene 4 vértices + alta solidez + pocos defectos = ES DIAMANTE
-    if has_4_vertices and very_high_solidity and very_few_defects:
-        score += 0.70  # MÁXIMA PRIORIDAD
-        
-        if no_rounded:
+    if has_4_vertices and high_solidity and few_defects and no_deep_notch:
+        score += 0.70  # Base
+        if solidity > 0.92:
             score += 0.15
-        
-        if not has_notch:  # Bonus si NO tiene hendidura
+        if defects_count == 0:
             score += 0.10
-        
-        if solidity > 0.93:  # Bonus por solidez muy alta
+        if notch_depth == 0:
             score += 0.05
     
-    # Diamante SI Y SOLO SI tiene 4 vértices + muy alta solidez + muy pocos defectos
-    is_diamond = (has_4_vertices and very_high_solidity and very_few_defects)
+    # Diamante SOLO SI: 4 vértices + alta solidez + pocos defectos + sin hendidura profunda
+    is_diamond = (has_4_vertices and high_solidity and few_defects and no_deep_notch)
     
     return is_diamond, score
 
@@ -393,15 +358,11 @@ def detect_spade_pattern(img):
     """
     h, w = img.shape
     
-    # NO debe tener hendidura superior (eso es corazón)
-    has_notch, _ = detect_top_notch(img)
-    no_notch = not has_notch
-    
-    # Analizar defectos (pica tiene moderados, menos que trébol)
+    # Analizar defectos
     defects_count, max_depth, _ = analyze_convexity_defects(img)
-    moderate_defects = 2 <= defects_count <= 4
+    moderate_defects = 2 <= defects_count <= 5
     
-    # Solidez media-alta (más que trébol, menos que diamante)
+    # Solidez media
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cnt = max(contours, key=cv2.contourArea)
@@ -409,89 +370,49 @@ def detect_spade_pattern(img):
         hull_area = cv2.contourArea(hull)
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
-        medium_high_solidity = 0.82 < solidity < 0.92
+        medium_solidity = 0.78 < solidity < 0.90
     else:
-        medium_high_solidity = False
+        medium_solidity = False
         solidity = 0
     
-    # CARACTERÍSTICA CLAVE: Detectar PUNTA ÚNICA en el top
-    # Pica tiene una sola punta aguda arriba
-    # Trébol tiene superficie plana/ondulada (3 círculos)
+    # CARACTERÍSTICA CLAVE: Top estrecho (punta)
     top_10 = img[:int(h*0.1), :]
-    
-    # Proyección horizontal del top
     top_projection = np.sum(top_10, axis=0)
     
     if len(top_projection) > 0 and np.max(top_projection) > 0:
-        # Normalizar
         top_projection = top_projection / np.max(top_projection)
-        
-        # Buscar un pico único y pronunciado (punta de pica)
-        # vs múltiples picos o superficie plana (trébol)
-        
-        # Contar cuántas columnas tienen más del 50% de intensidad
         high_intensity_cols = np.sum(top_projection > 0.5)
         total_cols = len(top_projection)
+        narrow_top = (high_intensity_cols / total_cols) < 0.35
         
-        # Pica: pocas columnas con alta intensidad (punta aguda)
-        # Trébol: muchas columnas con alta intensidad (3 círculos = ancho)
-        narrow_top = (high_intensity_cols / total_cols) < 0.3
-        
-        # Buscar el ancho del pico
-        # Pica: pico estrecho en el centro
-        # Trébol: ancho casi completo
         center = len(top_projection) // 2
         center_range = range(max(0, center-10), min(len(top_projection), center+10))
         center_mass = np.sum([top_projection[i] for i in center_range if i < len(top_projection)])
         total_mass = np.sum(top_projection)
-        
-        # Pica: masa concentrada en el centro
-        centered_peak = (center_mass / total_mass) > 0.4 if total_mass > 0 else False
+        centered_peak = (center_mass / total_mass) > 0.35 if total_mass > 0 else False
     else:
         narrow_top = False
         centered_peak = False
     
-    # Analizar la forma del top más detalladamente
-    top_25 = img[:int(h*0.25), :]
-    top_contours, _ = cv2.findContours(top_25, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if top_contours:
-        top_cnt = max(top_contours, key=cv2.contourArea)
-        
-        # Encontrar el punto más alto
-        topmost = tuple(top_cnt[top_cnt[:, :, 1].argmin()][0])
-        
-        # Verificar que está centrado (característica de pica)
-        is_top_centered = abs(topmost[0] - w//2) < w * 0.2
-    else:
-        is_top_centered = False
-    
     # Debug
-    print(f"    [SPADE DEBUG] Defectos: {defects_count} (max depth: {max_depth:.1f})")
-    print(f"    [SPADE DEBUG] Solidez: {solidity:.3f} (medium-high: {medium_high_solidity})")
-    print(f"    [SPADE DEBUG] Top estrecho: {narrow_top}")
-    print(f"    [SPADE DEBUG] Pico centrado: {centered_peak}")
-    print(f"    [SPADE DEBUG] Punto superior centrado: {is_top_centered}")
+    print(f"    [SPADE DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
+    print(f"    [SPADE DEBUG] Top estrecho: {narrow_top}, Centrado: {centered_peak}")
     
-    # Score ajustado
+    # Score - REQUIERE top estrecho + solidez media
     score = 0.0
     
-    if narrow_top and centered_peak:
-        score += 0.45  # CRÍTICO: punta única y estrecha
+    if narrow_top and centered_peak and medium_solidity:
+        score += 0.50
+        if moderate_defects:
+            score += 0.25
+        if 0.82 < solidity < 0.88:
+            score += 0.15
     
-    if medium_high_solidity:
-        score += 0.25
+    # Si el top es ANCHO, NO puede ser pica
+    if not narrow_top:
+        score = score * 0.3  # Penalizar fuertemente
     
-    if moderate_defects:
-        score += 0.15
-    
-    if is_top_centered:
-        score += 0.10
-    
-    if no_notch:
-        score += 0.05
-    
-    is_spade = (narrow_top and centered_peak and medium_high_solidity)
+    is_spade = (narrow_top and centered_peak and medium_solidity)
     
     return is_spade, score
 
@@ -501,11 +422,11 @@ def detect_club_pattern(img):
     """
     h, w = img.shape
     
-    # Analizar defectos de convexidad (trébol tiene muchos)
-    defects_count, max_depth, defect_depths = analyze_convexity_defects(img)
-    many_defects = defects_count >= 5
+    # Muchos defectos
+    defects_count, max_depth, _ = analyze_convexity_defects(img)
+    some_defects = defects_count >= 3  # Más permisivo aún
     
-    # Muy baja solidez (por las separaciones entre círculos)
+    # Baja solidez
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cnt = max(contours, key=cv2.contourArea)
@@ -513,94 +434,81 @@ def detect_club_pattern(img):
         hull_area = cv2.contourArea(hull)
         area = cv2.contourArea(cnt)
         solidity = float(area) / hull_area if hull_area != 0 else 0
-        very_low_solidity = solidity < 0.82
+        low_solidity = solidity < 0.85  # Aún más permisivo
     else:
-        very_low_solidity = False
+        low_solidity = False
         solidity = 0
     
-    # CARACTERÍSTICA CLAVE: TOP ANCHO Y PLANO (3 círculos)
-    top_10 = img[:int(h*0.1), :]
-    
-    # Proyección horizontal del top
-    top_projection = np.sum(top_10, axis=0)
+    # CARACTERÍSTICA CLAVE: Top ANCHO (3 círculos)
+    top_15 = img[:int(h*0.15), :]
+    top_projection = np.sum(top_15, axis=0)
     
     wide_top = False
-    has_undulations = False
     high_intensity_cols = 0
-    total_cols = 1  # Inicializar para evitar división por cero
+    total_cols = 1
     
     if len(top_projection) > 0 and np.max(top_projection) > 0:
-        # Normalizar
         top_projection = top_projection / np.max(top_projection)
-        
-        # Contar cuántas columnas tienen alta intensidad
-        high_intensity_cols = np.sum(top_projection > 0.5)
+        high_intensity_cols = np.sum(top_projection > 0.35)  # Bajado de 0.4 a 0.35
         total_cols = len(top_projection)
-        
-        # Trébol: MUCHAS columnas con intensidad (ancho por los 3 círculos)
-        wide_top = (high_intensity_cols / total_cols) > 0.4
-        
-        # Buscar múltiples ondulaciones (picos y valles por los círculos)
-        # Calcular segunda derivada (cambios de pendiente)
-        if len(top_projection) > 2:
-            diff = np.diff(top_projection)
-            
-            # Contar cambios de signo (de subir a bajar = pico)
-            sign_changes = np.sum(np.diff(np.sign(diff)) != 0)
-            
-            # Trébol: múltiples cambios (ondulaciones por círculos)
-            has_undulations = sign_changes >= 4
+        wide_top = (high_intensity_cols / total_cols) > 0.35  # Bajado de 0.40 a 0.35
     
-    # Distribución: muy top-heavy
+    # Distribución top-heavy
     top_70 = img[:int(h*0.7), :]
     bottom_30 = img[int(h*0.7):, :]
     top_pixels = cv2.countNonZero(top_70)
     bottom_pixels = cv2.countNonZero(bottom_30)
     total = top_pixels + bottom_pixels
-    very_top_heavy = (top_pixels / total > 0.70) if total > 0 else False
+    very_top_heavy = (top_pixels / total > 0.60) if total > 0 else False  # Bajado de 0.65 a 0.60
     
-    # Analizar ancho en la parte superior vs medio
-    top_30 = img[:int(h*0.3), :]
-    middle_30 = img[int(h*0.3):int(h*0.6), :]
-    
-    # Ancho promedio (columnas no vacías)
-    top_cols = [i for i in range(w) if np.sum(top_30[:, i]) > 0]
-    middle_cols = [i for i in range(w) if np.sum(middle_30[:, i]) > 0]
-    
-    top_width = len(top_cols)
-    middle_width = len(middle_cols)
-    
-    # Trébol: top es IGUAL O MÁS ANCHO que middle (por los círculos)
-    # Pica: top es MÁS ESTRECHO que middle (se va estrechando hacia la punta)
-    top_wider_or_equal = top_width >= middle_width * 0.9 if middle_width > 0 else False
+    # Verificar que NO es MUY estrecho (eso sería pica)
+    very_narrow = (high_intensity_cols / total_cols) < 0.25 if total_cols > 0 else False
+    not_very_narrow = not very_narrow
     
     # Debug
-    print(f"    [CLUB DEBUG] Defectos: {defects_count} (many: {many_defects})")
-    print(f"    [CLUB DEBUG] Solidez: {solidity:.3f} (very low: {very_low_solidity})")
+    print(f"    [CLUB DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
     print(f"    [CLUB DEBUG] Top ancho: {wide_top} (ratio: {high_intensity_cols/total_cols:.2f})")
-    print(f"    [CLUB DEBUG] Ondulaciones: {has_undulations}")
-    print(f"    [CLUB DEBUG] Top más ancho que medio: {top_wider_or_equal} (top:{top_width} vs mid:{middle_width})")
-    print(f"    [CLUB DEBUG] Very top heavy: {very_top_heavy}")
+    print(f"    [CLUB DEBUG] Top heavy: {very_top_heavy}")
+    print(f"    [CLUB DEBUG] No muy estrecho: {not_very_narrow}")
     
-    # Score ajustado
+    # Score - MUY flexible
     score = 0.0
     
-    if wide_top and top_wider_or_equal:
-        score += 0.40  # CRÍTICO: top ancho (3 círculos)
+    # CAMINO 1: Cumple características principales
+    if (wide_top or very_top_heavy) and (low_solidity or some_defects):
+        score += 0.40
+        
+        if wide_top:
+            score += 0.20
+        
+        if very_top_heavy:
+            score += 0.15
+        
+        if low_solidity:
+            score += 0.15
+        
+        if some_defects:
+            score += 0.10
     
-    if very_low_solidity:
-        score += 0.25
+    # CAMINO 2: Solo por exclusión (no es pica)
+    elif not_very_narrow and (low_solidity and some_defects):
+        score += 0.30
+        
+        if very_top_heavy:
+            score += 0.20
     
-    if has_undulations:
-        score += 0.15  # Ondulaciones por los círculos
-    
-    if many_defects:
+    # Bonus si el ratio está cerca del umbral (0.35-0.40)
+    ratio = high_intensity_cols / total_cols if total_cols > 0 else 0
+    if 0.30 <= ratio <= 0.42:
         score += 0.10
     
-    if very_top_heavy:
-        score += 0.10
+    # Penalización MUY SUAVE solo si es MUY estrecho
+    if very_narrow:
+        score = score * 0.6  # Menos agresivo
     
-    is_club = (wide_top and very_low_solidity and top_wider_or_equal)
+    # Condición MUY permisiva
+    is_club = ((wide_top or very_top_heavy) and (low_solidity or some_defects)) or \
+              (not_very_narrow and low_solidity and some_defects)
     
     return is_club, score
 
