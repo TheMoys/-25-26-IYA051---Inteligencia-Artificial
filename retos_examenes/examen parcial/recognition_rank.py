@@ -2,8 +2,34 @@ import cv2
 import numpy as np
 import os
 
-def load_rank_templates(path='templates/ranks', size=(70, 50)):  # ORDEN CORRECTO: alto x ancho
-    """Carga las plantillas de los números/letras"""
+def augment_template(binary, name):
+    """
+    Genera múltiples versiones de un template con diferentes grosores
+    """
+    versions = {}
+    
+    # Versión original
+    versions[f"{name}_original"] = binary.copy()
+    
+    # Versión adelgazada (erosión)
+    kernel_thin = np.ones((2, 2), np.uint8)
+    thinned = cv2.erode(binary, kernel_thin, iterations=1)
+    versions[f"{name}_thin"] = thinned
+    
+    # Versión engrosada (dilatación)
+    kernel_thick = np.ones((2, 2), np.uint8)
+    thickened = cv2.dilate(binary, kernel_thick, iterations=1)
+    versions[f"{name}_thick"] = thickened
+    
+    # Versión muy engrosada (para templates muy finos)
+    kernel_thick2 = np.ones((3, 3), np.uint8)
+    very_thick = cv2.dilate(binary, kernel_thick2, iterations=1)
+    versions[f"{name}_vthick"] = very_thick
+    
+    return versions
+
+def load_rank_templates(path='templates/ranks', size=(40, 40)):
+    """Carga plantillas con MÚLTIPLES VARIACIONES de grosor"""
     templates = {}
     
     if not os.path.exists(path):
@@ -18,285 +44,245 @@ def load_rank_templates(path='templates/ranks', size=(70, 50)):  # ORDEN CORRECT
         img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
         
         if img is None:
-            print(f"[WARNING] No se pudo cargar: {filepath}")
             continue
         
-        # Las plantillas son NEGRAS sobre BLANCO -> convertir a BLANCO sobre NEGRO
-        _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)  # INV para invertir
-        
-        # Redimensionar (mantener aspect ratio)
-        resized = cv2.resize(binary, (size[1], size[0]), interpolation=cv2.INTER_AREA)  # (width, height)
-        
-        # Limpiar ruido
-        kernel = np.ones((2, 2), np.uint8)
-        clean = cv2.morphologyEx(resized, cv2.MORPH_CLOSE, kernel, iterations=1)
-        
         rank_name = os.path.splitext(name)[0]
-        templates[rank_name] = clean
         
-        print(f"[LOAD] Template '{rank_name}' cargado: {clean.shape}")
+        # Detección automática de fondo
+        mean_val = cv2.mean(img)[0]
+        
+        if mean_val > 127:
+            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+        else:
+            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+        
+        # Limpieza básica
+        kernel = np.ones((2, 2), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+        
+        if binary.shape != size:
+            binary = cv2.resize(binary, size, interpolation=cv2.INTER_AREA)
+        
+        # Generar múltiples versiones
+        augmented = augment_template(binary, rank_name)
+        
+        # Añadir todas las versiones
+        for aug_name, aug_template in augmented.items():
+            templates[aug_name] = aug_template
+            cv2.imwrite(f"debug_template_{aug_name}.png", aug_template)
+        
+        print(f"[LOAD] '{rank_name}': Generadas {len(augmented)} versiones")
     
-    print(f"\n[INIT] Total plantillas cargadas: {len(templates)}")
+    print(f"\n[INIT] Total plantillas (con variaciones): {len(templates)}")
     return templates
 
-# Cargar plantillas globales
 RANK_TEMPLATES = load_rank_templates()
 
 def preprocess_rank_roi(roi):
-    """
-    Preprocesa el ROI del rank: BLANCO sobre NEGRO
-    """
-    # Convertir a grises
+    """Preprocesamiento con MÁS variaciones"""
     if len(roi.shape) == 3:
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     else:
         gray = roi.copy()
     
-    # Ecualizar histograma para mejorar contraste
-    gray = cv2.equalizeHist(gray)
+    versions = []
     
-    # Threshold de Otsu (más robusto)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # 1. Otsu básico
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    versions.append(('otsu', otsu))
     
-    # Si hay más fondo que símbolo, invertir
-    white_pixels = cv2.countNonZero(binary)
-    if white_pixels < binary.size * 0.2:  # Muy poco blanco = necesita inversión
-        binary = cv2.bitwise_not(binary)
+    # 2. CLAHE + Otsu
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(gray)
+    _, clahe_otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    versions.append(('clahe_otsu', clahe_otsu))
     
-    # Limpieza agresiva
-    kernel = np.ones((3, 3), np.uint8)
+    # 3-5. Threshold fijo con diferentes valores
+    for thresh_val, name in [(155, 'fixed_155'), (170, 'fixed_170'), (185, 'fixed_185')]:
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, fixed = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
+        versions.append((name, fixed))
     
-    # Eliminar ruido pequeño
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    # 6. Adaptativo
+    adaptive = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2
+    )
+    versions.append(('adaptive', adaptive))
     
-    # Cerrar huecos
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # 7. Con erosión (adelgazar)
+    kernel = np.ones((2, 2), np.uint8)
+    eroded = cv2.erode(otsu, kernel, iterations=1)
+    versions.append(('otsu_thin', eroded))
     
-    # Encontrar el contorno principal y recortar
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 8. Con dilatación (engrosar)
+    dilated = cv2.dilate(otsu, kernel, iterations=1)
+    versions.append(('otsu_thick', dilated))
     
-    if contours:
-        # Obtener el contorno más grande
-        largest = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest)
-        
-        # Añadir padding
-        padding = 5
-        x = max(0, x - padding)
-        y = max(0, y - padding)
-        w = min(binary.shape[1] - x, w + 2*padding)
-        h = min(binary.shape[0] - y, h + 2*padding)
-        
-        # Recortar
-        cropped = binary[y:y+h, x:x+w]
-        
-        # Crear imagen con padding para mantener aspect ratio
-        max_dim = max(h, w)
-        padded = np.zeros((max_dim, max_dim), dtype=np.uint8)
-        
-        # Centrar el símbolo
-        y_offset = (max_dim - h) // 2
-        x_offset = (max_dim - w) // 2
-        padded[y_offset:y_offset+h, x_offset:x_offset+w] = cropped
-        
-        return padded
-    
-    return binary
+    return versions
 
-def match_template_multimethod(img, template):
+def extract_main_symbol_simple(binary, target_size=(40, 40)):
     """
-    Aplica múltiples métodos de template matching
+    Extracción SIMPLE y robusta
     """
-    # Asegurarse de que ambas imágenes tienen el mismo tamaño
+    # Componentes conectados
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    
+    if num_labels <= 1:
+        return cv2.resize(binary, target_size, interpolation=cv2.INTER_AREA)
+    
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    
+    if len(areas) == 0:
+        return cv2.resize(binary, target_size, interpolation=cv2.INTER_AREA)
+    
+    # Tomar componentes significativos (>15% del máximo)
+    max_area = areas.max()
+    valid_components = []
+    
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] >= max_area * 0.15:
+            valid_components.append(i)
+    
+    # Máscara con componentes válidos
+    mask = np.zeros_like(binary)
+    for comp_idx in valid_components:
+        mask[labels == comp_idx] = 255
+    
+    # Bounding box
+    coords = cv2.findNonZero(mask)
+    if coords is None:
+        return cv2.resize(binary, target_size, interpolation=cv2.INTER_AREA)
+    
+    x, y, w, h = cv2.boundingRect(coords)
+    
+    # Padding pequeño
+    padding = 3
+    x = max(0, x - padding)
+    y = max(0, y - padding)
+    w = min(mask.shape[1] - x, w + 2*padding)
+    h = min(mask.shape[0] - y, h + 2*padding)
+    
+    cropped = mask[y:y+h, x:x+w]
+    
+    if cropped.size == 0:
+        return cv2.resize(binary, target_size, interpolation=cv2.INTER_AREA)
+    
+    # Redimensionar manteniendo aspect ratio
+    ch, cw = cropped.shape
+    scale = min(target_size[0] / ch, target_size[1] / cw) * 0.88
+    
+    new_h = max(1, int(ch * scale))
+    new_w = max(1, int(cw * scale))
+    
+    resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    # Canvas centrado
+    canvas = np.zeros(target_size, dtype=np.uint8)
+    y_offset = (target_size[0] - new_h) // 2
+    x_offset = (target_size[1] - new_w) // 2
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+    
+    return canvas
+
+def match_rank_template(img, template):
+    """Matching simple pero efectivo"""
     if img.shape != template.shape:
-        img = cv2.resize(img, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
+        img = cv2.resize(img, template.shape[::-1], interpolation=cv2.INTER_AREA)
     
-    methods = [
-        (cv2.TM_CCOEFF_NORMED, 0.4),    # 40% peso
-        (cv2.TM_CCORR_NORMED, 0.3),     # 30% peso
-        (cv2.TM_SQDIFF_NORMED, 0.3),    # 30% peso
-    ]
+    scores = []
     
-    total_score = 0.0
+    # Template matching
+    try:
+        result = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
+        scores.append(max(0, result.max()))
+    except:
+        scores.append(0.0)
     
-    for method, weight in methods:
-        try:
-            result = cv2.matchTemplate(img, template, method)
-            
-            if method == cv2.TM_SQDIFF_NORMED:
-                score = 1.0 - result.min()  # Invertir (menor es mejor)
-            else:
-                score = result.max()
-            
-            total_score += score * weight
-        except:
-            pass
+    try:
+        result = cv2.matchTemplate(img, template, cv2.TM_CCORR_NORMED)
+        scores.append(max(0, result.max()))
+    except:
+        scores.append(0.0)
     
-    return total_score
+    # IoU
+    try:
+        intersection = cv2.bitwise_and(img, template)
+        union = cv2.bitwise_or(img, template)
+        
+        inter_count = cv2.countNonZero(intersection)
+        union_count = cv2.countNonZero(union)
+        
+        iou = inter_count / union_count if union_count > 0 else 0
+        scores.append(iou)
+    except:
+        scores.append(0.0)
+    
+    # Promedio
+    return sum(scores) / len(scores) if scores else 0.0
 
 def recognize_rank(warp):
-    """
-    Reconoce el número/letra de una carta
-    """
-    print("\n=== RECONOCIMIENTO DE RANK ===")
+    """Reconoce el rank con sistema de votación robusto"""
+    print("\n" + "="*60)
+    print("RECONOCIMIENTO DE RANK")
+    print("="*60)
     
-    # Definir ROIs (ajustados para capturar mejor el número)
-    roi_configs = [
-        {'y1': 5, 'y2': 100, 'x1': 5, 'x2': 80, 'name': 'main'},
-        {'y1': 10, 'y2': 95, 'x1': 10, 'x2': 75, 'name': 'centered'},
-        {'y1': 0, 'y2': 105, 'x1': 0, 'x2': 85, 'name': 'expanded'},
-    ]
+    cv2.imwrite("debug_warp_full.png", warp)
     
-    best_rank = None
-    best_score = -1
+    roi = warp[8:92, 8:68]
+    cv2.imwrite("debug_roi_original.png", roi)
     
-    for i, config in enumerate(roi_configs):
-        try:
-            roi = warp[config['y1']:config['y2'], config['x1']:config['x2']]
-            
-            if roi.size == 0:
-                continue
-            
-            # Preprocesar
-            processed = preprocess_rank_roi(roi)
-            
-            # Redimensionar al tamaño de las plantillas (70 alto x 50 ancho)
-            resized = cv2.resize(processed, (50, 70), interpolation=cv2.INTER_AREA)
-            
-            # Guardar debug del primero
-            if i == 0:
-                cv2.imwrite(f"debug_roi_{config['name']}_original.png", roi)
-                cv2.imwrite(f"debug_roi_{config['name']}_processed.png", processed)
-                cv2.imwrite(f"debug_roi_{config['name']}_resized.png", resized)
-            
-            # Matching
-            all_scores = {}
-            for name, template in RANK_TEMPLATES.items():
-                score = match_template_multimethod(resized, template)
-                all_scores[name] = score
-            
-            # Top 5
-            sorted_scores = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)
-            roi_best = sorted_scores[0][0]
-            roi_score = sorted_scores[0][1]
-            
-            if i == 0:
-                print(f"\n  [RANK] Top 5 para ROI '{config['name']}':")
-                for j, (name, score) in enumerate(sorted_scores[:5]):
-                    print(f"    {j+1}. {name}: {score:.4f}")
-            
-            if roi_score > best_score:
-                best_score = roi_score
-                best_rank = roi_best
+    preprocessed_versions = preprocess_rank_roi(roi)
+    
+    for idx, (name, img) in enumerate(preprocessed_versions, 1):
+        cv2.imwrite(f"debug_{idx}_{name}.png", img)
+    
+    # Sistema de votación
+    vote_scores = {}  # rank_base -> lista de scores
+    
+    for v_idx, (v_name, binary) in enumerate(preprocessed_versions):
+        cleaned = extract_main_symbol_simple(binary, target_size=(40, 40))
         
-        except Exception as e:
-            print(f"  [ERROR] ROI '{config['name']}': {e}")
-            continue
-    
-    print(f"\n*** MEJOR MATCH: {best_rank} (score: {best_score:.4f}) ***\n")
-    
-    return best_rank, best_score
-
-def debug_preprocessing(roi, name="debug"):
-    """
-    Guarda imágenes en cada paso del preprocesamiento para análisis
-    """
-    # Paso 1: Original
-    cv2.imwrite(f"{name}_1_original.png", roi)
-    
-    # Paso 2: Grises
-    if len(roi.shape) == 3:
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = roi.copy()
-    cv2.imwrite(f"{name}_2_gray.png", gray)
-    
-    # Paso 3: Blur
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    cv2.imwrite(f"{name}_3_blurred.png", blurred)
-    
-    # Paso 4: Threshold adaptativo
-    binary = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2
-    )
-    cv2.imwrite(f"{name}_4_adaptive.png", binary)
-    
-    # Paso 5: Verificar inversión
-    white_pixels = cv2.countNonZero(binary)
-    total_pixels = binary.size
-    needs_invert = white_pixels > total_pixels / 2
-    
-    if needs_invert:
-        binary = cv2.bitwise_not(binary)
-    cv2.imwrite(f"{name}_5_inverted.png", binary)
-    
-    # Paso 6: Limpieza
-    kernel = np.ones((3, 3), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
-    cv2.imwrite(f"{name}_6_opened.png", binary)
-    
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
-    cv2.imwrite(f"{name}_7_closed.png", binary)
-    
-    binary = cv2.dilate(binary, kernel, iterations=1)
-    cv2.imwrite(f"{name}_8_dilated.png", binary)
-    
-    # Paso 7: Redimensionado final
-    resized = cv2.resize(binary, (50, 70), interpolation=cv2.INTER_AREA)
-    cv2.imwrite(f"{name}_9_final.png", resized)
-    
-    print(f"\n[DEBUG] Imágenes guardadas con prefijo '{name}'")
-    print(f"  - Inversión necesaria: {needs_invert}")
-    print(f"  - Píxeles blancos: {white_pixels}/{total_pixels} ({white_pixels/total_pixels*100:.1f}%)")
-    
-    return resized
-
-
-    """
-    Reconoce el número/letra de una carta desde su imagen warpeada
-    """
-    print("\n=== RECONOCIMIENTO DE RANK ===")
-    
-    # Definir múltiples ROIs para probar (por si la carta está ligeramente desalineada)
-    roi_configs = [
-        {'y1': 10, 'y2': 90, 'x1': 10, 'x2': 70, 'name': 'default'},
-        {'y1': 5, 'y2': 95, 'x1': 5, 'x2': 75, 'name': 'expanded'},
-        {'y1': 15, 'y2': 85, 'x1': 15, 'x2': 65, 'name': 'contracted'},
-        {'y1': 8, 'y2': 92, 'x1': 8, 'x2': 72, 'name': 'shifted'},
-    ]
-    
-    best_rank = None
-    best_score = -1
-    
-    for config in roi_configs:
-        try:
-            # Extraer ROI
-            roi = warp[config['y1']:config['y2'], config['x1']:config['x2']]
-            
-            if roi.size == 0:
-                print(f"  [WARNING] ROI '{config['name']}' está vacío, saltando...")
-                continue
-            
-            # Guardar ROI para debug (opcional)
-            # cv2.imwrite(f"debug_rank_roi_{config['name']}.png", roi)
-            
-            print(f"\n  Probando ROI '{config['name']}'...")
-            
-            # Hacer el matching
-            rank_name, score = match_rank(roi)
-            
-            print(f"  Resultado: {rank_name} (score: {score:.4f})")
-            
-            # Actualizar mejor resultado
-            if score > best_score:
-                best_score = score
-                best_rank = rank_name
+        if v_idx == 0:
+            cv2.imwrite("debug_cleaned_main.png", cleaned)
         
-        except Exception as e:
-            print(f"  [ERROR] Error con ROI '{config['name']}': {e}")
-            continue
+        # Matching contra todas las plantillas (con variaciones)
+        for template_name, template in RANK_TEMPLATES.items():
+            score = match_rank_template(cleaned, template)
+            
+            # Extraer rank base (sin sufijos _original, _thin, etc.)
+            rank_base = template_name.split('_')[0]
+            
+            if rank_base not in vote_scores:
+                vote_scores[rank_base] = []
+            
+            vote_scores[rank_base].append(score)
     
-    print(f"\n*** MEJOR MATCH: {best_rank} (score: {best_score:.4f}) ***\n")
+    # Calcular score final por rank (promedio de los 5 mejores)
+    final_scores = {}
+    for rank_base, scores in vote_scores.items():
+        top_scores = sorted(scores, reverse=True)[:5]
+        final_scores[rank_base] = sum(top_scores) / len(top_scores)
     
-    return best_rank, best_score
+    sorted_results = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    print(f"\n{'='*60}")
+    print("TOP 10 RESULTADOS:")
+    print(f"{'='*60}")
+    for i, (name, score) in enumerate(sorted_results[:10], 1):
+        marker = " ← ELEGIDO" if i == 1 else ""
+        print(f"  {i:2d}. {name:8s} : {score:.4f}{marker}")
+    
+    if sorted_results:
+        best_rank = sorted_results[0][0]
+        best_score = sorted_results[0][1]
+        
+        print(f"\n{'='*60}")
+        print(f"*** RESULTADO FINAL: {best_rank} (confianza: {best_score:.4f}) ***")
+        print(f"{'='*60}\n")
+        
+        return best_rank, best_score
+    
+    return None, 0.0
