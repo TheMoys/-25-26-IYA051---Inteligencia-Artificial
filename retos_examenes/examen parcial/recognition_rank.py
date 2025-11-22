@@ -146,6 +146,51 @@ def preprocess_rank_roi(roi):
     
     return versions
 
+def detect_10(binary):
+    """
+    Detecta si hay DOS componentes separados (característico del "10")
+    """
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    
+    if num_labels <= 1:
+        return False
+    
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    
+    if len(areas) < 2:
+        return False
+    
+    # Ordenar por área
+    sorted_areas = sorted(areas, reverse=True)
+    
+    # Si los dos componentes más grandes son similares (>30% del mayor)
+    if len(sorted_areas) >= 2:
+        if sorted_areas[1] >= sorted_areas[0] * 0.30:
+            # Y además hay 2 componentes significativos
+            significant_comps = sum(1 for area in areas if area >= sorted_areas[0] * 0.30)
+            
+            if significant_comps >= 2:
+                # Verificar que están separados horizontalmente
+                valid_components = []
+                for i in range(1, num_labels):
+                    if stats[i, cv2.CC_STAT_AREA] >= sorted_areas[0] * 0.30:
+                        valid_components.append(i)
+                
+                if len(valid_components) >= 2:
+                    # Obtener bounding boxes
+                    x_positions = []
+                    for comp_idx in valid_components[:2]:
+                        x = stats[comp_idx, cv2.CC_STAT_LEFT]
+                        x_positions.append(x)
+                    
+                    # Si están separados horizontalmente (diferencia > 5px)
+                    if abs(x_positions[0] - x_positions[1]) > 5:
+                        return True
+    
+    return False
+
 def compare_direct(img, template):
     """
     Comparación DIRECTA: asume mismo tamaño
@@ -187,10 +232,10 @@ def compare_direct(img, template):
 
 def recognize_rank(warp):
     """
-    Reconocimiento SIMPLE Y DIRECTO
+    Reconocimiento SIMPLE Y DIRECTO con detección especial del 10
     """
     print("\n" + "="*70)
-    print("RECONOCIMIENTO DE RANK (SIMPLIFICADO)")
+    print("RECONOCIMIENTO DE RANK (CON DETECCIÓN DE 10)")
     print("="*70)
     
     # ROI del rank
@@ -205,7 +250,19 @@ def recognize_rank(warp):
     for idx, (name, img) in enumerate(preprocessed, 1):
         cv2.imwrite(f"debug_rank_{idx}_{name}.png", img)
     
-    # Votación simple
+    # DETECCIÓN ESPECIAL DEL 10
+    is_ten_votes = 0
+    for version_name, binary in preprocessed:
+        if detect_10(binary):
+            is_ten_votes += 1
+    
+    if is_ten_votes >= 2:
+        print("\n" + "!"*70)
+        print("*** DETECTADO: DOS COMPONENTES → Es un 10 ***")
+        print("!"*70 + "\n")
+        return "10", 1.0
+    
+    # Votación simple para el resto
     vote_scores = {}
     
     for version_name, binary in preprocessed:
@@ -217,6 +274,10 @@ def recognize_rank(warp):
         
         # Comparar DIRECTAMENTE contra cada template
         for rank_name, template in RANK_TEMPLATES.items():
+            # Excluir el 10 del matching normal
+            if rank_name == '10':
+                continue
+            
             score = compare_direct(normalized, template)
             
             if rank_name not in vote_scores:
