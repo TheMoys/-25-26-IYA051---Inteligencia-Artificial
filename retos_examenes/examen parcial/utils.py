@@ -49,21 +49,69 @@ def resize_to_display(frame, max_width=DISPLAY_WIDTH, max_height=DISPLAY_HEIGHT)
     return resized
 
 def order_points(pts):
-    # pts: array de 4 puntos (x,y)
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]    # top-left
-    rect[2] = pts[np.argmax(s)]    # bottom-right
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)] # top-right
-    rect[3] = pts[np.argmax(diff)] # bottom-left
-    return rect
+    """
+    Ordena los 4 puntos en orden: top-left, top-right, bottom-right, bottom-left
+    MEJORADO: Usa centroide y ángulos para manejar rotaciones extremas
+    """
+    # Calcular centroide
+    center = pts.mean(axis=0)
+    
+    # Calcular ángulos desde el centro (en radianes)
+    angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+    
+    # Ordenar puntos por ángulo (sentido antihorario desde la derecha)
+    sorted_indices = np.argsort(angles)
+    sorted_pts = pts[sorted_indices]
+    
+    # Encontrar el punto más cercano a la esquina superior izquierda (0, 0)
+    dists = np.sum(sorted_pts ** 2, axis=1)
+    tl_idx = np.argmin(dists)
+    
+    # Rotar array para que top-left sea el primero
+    sorted_pts = np.roll(sorted_pts, -tl_idx, axis=0)
+    
+    return sorted_pts.astype("float32")
 
 def four_point_transform(image, pts, w=WARP_WIDTH, h=WARP_HEIGHT):
+    """
+    Transforma perspectiva y GARANTIZA que la carta quede VERTICAL
+    """
+    # Ordenar puntos
     rect = order_points(pts)
-    dst = np.array([[0,0],[w-1,0],[w-1,h-1],[0,h-1]], dtype="float32")
+    (tl, tr, br, bl) = rect
+    
+    # Calcular dimensiones del cuadrilátero
+    width_top = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    width_bottom = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    width = max(int(width_top), int(width_bottom))
+    
+    height_left = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    height_right = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    height = max(int(height_left), int(height_right))
+    
+    # Determinar si está horizontal o vertical
+    if width > height:
+        # Está HORIZONTAL → Necesita rotación 90°
+        # Intercambiar dimensiones y rotar puntos
+        dst = np.array([
+            [0, h - 1],           # tl → bl (rotado 90° antihorario)
+            [0, 0],               # tr → tl
+            [w - 1, 0],           # br → tr
+            [w - 1, h - 1]        # bl → br
+        ], dtype="float32")
+    else:
+        # Está VERTICAL → Usar orden normal
+        dst = np.array([
+            [0, 0],
+            [w - 1, 0],
+            [w - 1, h - 1],
+            [0, h - 1]
+        ], dtype="float32")
+    
+    # Aplicar transformación de perspectiva
     M = cv2.getPerspectiveTransform(rect, dst)
-    warp = cv2.warpPerspective(image, M, (w,h))
+    warp = cv2.warpPerspective(image, M, (w, h))
+    
     return warp
 
 def extract_card_contours(mask):
