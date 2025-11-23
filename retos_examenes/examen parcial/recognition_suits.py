@@ -3,34 +3,93 @@ import numpy as np
 import os
 
 def load_suit_templates(path='templates/suits', size=(70,70)):
-    """Carga las plantillas de los palos organizadas por color"""
+    """
+    Carga templates de palos con PRIORIDADES (primary → secondary)
+    Cada palo puede tener múltiples variantes
+    """
     templates = {
-        'red': {},
-        'black': {}
+        'red': {
+            'primary': {},
+            'secondary': {}
+        },
+        'black': {
+            'primary': {},
+            'secondary': {}
+        }
     }
     
-    for name in os.listdir(path):
-        if not name.lower().endswith('.png'):
+    for color in ['red', 'black']:
+        color_path = os.path.join(path, color)
+        
+        if not os.path.exists(color_path):
+            print(f"[WARNING] No existe: {color_path}")
             continue
         
-        img = cv2.imread(os.path.join(path, name), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            continue
+        for priority in ['primary', 'secondary']:
+            priority_path = os.path.join(color_path, priority)
             
-        img = cv2.resize(img, size)
-        _, img_bin = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        # Limpiar y normalizar la plantilla
-        kernel = np.ones((3,3), np.uint8)
-        img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_OPEN, kernel, iterations=1)
-        img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_CLOSE, kernel, iterations=1)
-        
-        # Clasificar por color basándose en el nombre
-        base_name = os.path.splitext(name)[0].lower()
-        if any(word in base_name for word in ['hearts', 'diamonds', 'corazones', 'diamantes', 'oros']):
-            templates['red'][base_name] = img_bin
-        elif any(word in base_name for word in ['spades', 'clubs', 'picas', 'treboles', 'espadas', 'bastos']):
-            templates['black'][base_name] = img_bin
+            if not os.path.exists(priority_path):
+                print(f"[WARNING] No existe: {priority_path}")
+                continue
+            
+            print(f"\n[LOADING {color.upper()} {priority.upper()}]")
+            
+            for filename in os.listdir(priority_path):
+                if not filename.lower().endswith('.png'):
+                    continue
+                
+                filepath = os.path.join(priority_path, filename)
+                img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+                
+                if img is None:
+                    continue
+                
+                # Extraer nombre del palo (diamonds, hearts, spades, clubs)
+                # Formato: "diamonds.png" o "diamonds_v2.png" → suit_name = "diamonds"
+                base_name = os.path.splitext(filename)[0].lower()
+                suit_name = base_name.split('_')[0]  # Obtener solo "diamonds", "hearts", etc.
+                
+                # Normalizar nombres alternativos
+                if suit_name in ['corazones', 'diamantes', 'oros']:
+                    suit_name = 'hearts' if suit_name == 'corazones' else 'diamonds'
+                elif suit_name in ['picas', 'treboles', 'espadas', 'bastos']:
+                    suit_name = 'spades' if suit_name in ['picas', 'espadas'] else 'clubs'
+                
+                # Redimensionar
+                img = cv2.resize(img, size)
+                
+                # Binarizar
+                _, img_bin = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                
+                # Limpiar y normalizar
+                kernel = np.ones((3,3), np.uint8)
+                img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_OPEN, kernel, iterations=1)
+                img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_CLOSE, kernel, iterations=1)
+                
+                # Guardar múltiples variantes por palo
+                if suit_name not in templates[color][priority]:
+                    templates[color][priority][suit_name] = []
+                
+                templates[color][priority][suit_name].append(img_bin)
+                
+                # Guardar para debug
+                variant_num = len(templates[color][priority][suit_name])
+                cv2.imwrite(f"template_suit_{color}_{priority}_{suit_name}_v{variant_num}.png", img_bin)
+                
+                print(f"  [LOAD] {color}/{priority}/{suit_name} (variante {variant_num}): {filename}")
+    
+    # Resumen
+    total_red_pri = sum(len(v) for v in templates['red']['primary'].values())
+    total_red_sec = sum(len(v) for v in templates['red']['secondary'].values())
+    total_black_pri = sum(len(v) for v in templates['black']['primary'].values())
+    total_black_sec = sum(len(v) for v in templates['black']['secondary'].values())
+    
+    print(f"\n[SUMMARY SUITS]")
+    print(f"  Red primary: {total_red_pri}")
+    print(f"  Red secondary: {total_red_sec}")
+    print(f"  Black primary: {total_black_pri}")
+    print(f"  Black secondary: {total_black_sec}")
+    print(f"  Total: {total_red_pri + total_red_sec + total_black_pri + total_black_sec}\n")
     
     return templates
 
@@ -430,29 +489,34 @@ def detect_heart_pattern(img):
 
 def detect_spade_pattern(img):
     """
-    Detecta pica: PUNTA ESTRECHA Y CENTRADA arriba
+    Detecta pica: PUNTA ESTRECHA Y CENTRADA arriba + base ancha
+    VERSION MEJORADA: Más estricto y distintivo
     """
     h, w = img.shape
     
-    # Analizar defectos
-    defects_count, max_depth, _ = analyze_convexity_defects(img)
-    moderate_defects = 2 <= defects_count <= 5
-    
-    # Solidez media
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        cnt = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(cnt)
-        hull_area = cv2.contourArea(hull)
-        area = cv2.contourArea(cnt)
-        solidity = float(area) / hull_area if hull_area != 0 else 0
-        medium_solidity = 0.75 < solidity < 0.90  # Más permisivo
-    else:
-        medium_solidity = False
-        solidity = 0
+    if not contours:
+        return False, 0.0
     
-    # CARACTERÍSTICA CLAVE: Top ESTRECHO (punta única)
-    top_10 = img[:int(h*0.1), :]
+    cnt = max(contours, key=cv2.contourArea)
+    
+    # 1. Solidez
+    hull = cv2.convexHull(cnt)
+    hull_area = cv2.contourArea(hull)
+    area = cv2.contourArea(cnt)
+    solidity = float(area) / hull_area if hull_area != 0 else 0
+    
+    # Picas tienen solidez moderada-alta (0.80-0.92)
+    medium_high_solidity = 0.80 < solidity < 0.93
+    
+    # 2. Defectos de convexidad
+    defects_count, max_depth, _ = analyze_convexity_defects(img)
+    
+    # Picas tienen POCOS defectos (2-4, no muchos como club)
+    few_defects = 1 <= defects_count <= 4
+    
+    # 3. CARACTERÍSTICA CLAVE: Top ESTRECHO (punta única)
+    top_10 = img[:int(h*0.12), :]  # 12% superior (más preciso)
     top_projection = np.sum(top_10, axis=0)
     
     narrow_top = False
@@ -461,50 +525,127 @@ def detect_spade_pattern(img):
     
     if len(top_projection) > 0 and np.max(top_projection) > 0:
         top_projection = top_projection / np.max(top_projection)
+        
+        # Contar columnas con alta intensidad
         high_intensity_cols = np.sum(top_projection > 0.5)
         total_cols = len(top_projection)
         top_width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 1.0
         
-        # Pica: top MUY estrecho
+        # Pica: top MUY estrecho (< 35% del ancho)
         narrow_top = top_width_ratio < 0.35
         
-        # Verificar que la punta está centrada
+        # Verificar centrado
         center = len(top_projection) // 2
         center_range = range(max(0, center-10), min(len(top_projection), center+10))
         center_mass = np.sum([top_projection[i] for i in center_range if i < len(top_projection)])
         total_mass = np.sum(top_projection)
         centered_peak = (center_mass / total_mass) > 0.35 if total_mass > 0 else False
     
-    # Debug
-    print(f"    [SPADE DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
-    print(f"    [SPADE DEBUG] Top width ratio: {top_width_ratio:.3f} (req: <0.35)")
-    print(f"    [SPADE DEBUG] Top estrecho: {narrow_top}, Centrado: {centered_peak}")
+    # 4. NUEVO: Análisis del MIDDLE (zona ensanchada característica de pica)
+    middle_start = int(h * 0.25)
+    middle_end = int(h * 0.60)
+    middle_region = img[middle_start:middle_end, :]
     
-    # Score - PESO MÁXIMO al top estrecho
+    middle_projection = np.sum(middle_region, axis=0)
+    
+    wide_middle = False
+    middle_width_ratio = 0.0
+    
+    if len(middle_projection) > 0 and np.max(middle_projection) > 0:
+        middle_projection = middle_projection / np.max(middle_projection)
+        high_intensity_cols = np.sum(middle_projection > 0.5)
+        total_cols = len(middle_projection)
+        middle_width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 0.0
+        
+        # Pica: middle ANCHO (> 65% del ancho) - característica distintiva vs club
+        wide_middle = middle_width_ratio > 0.65
+    
+    # 5. NUEVO: Análisis de SIMETRÍA vertical
+    left_half = img[:, :w//2]
+    right_half = cv2.flip(img[:, w//2:], 1)
+    
+    # Asegurar que ambas mitades tengan el mismo tamaño
+    min_width = min(left_half.shape[1], right_half.shape[1])
+    left_half = left_half[:, :min_width]
+    right_half = right_half[:, :min_width]
+    
+    # Comparar simetría
+    difference = cv2.absdiff(left_half, right_half)
+    symmetry_score = 1.0 - (np.mean(difference) / 255.0)
+    
+    # Pica es MUY simétrica
+    is_symmetric = symmetry_score > 0.75
+    
+    # 6. Aspect ratio del bounding box
+    x, y, w_box, h_box = cv2.boundingRect(cnt)
+    aspect_ratio = float(w_box) / h_box if h_box > 0 else 0
+    
+    # Pica tiene aspect ratio cercano a 1 o ligeramente vertical
+    good_aspect = 0.70 < aspect_ratio < 1.15
+    
+    # Debug detallado
+    print(f"    [SPADE DEBUG] Solidez: {solidity:.3f} (req: 0.80-0.93)")
+    print(f"    [SPADE DEBUG] Defectos: {defects_count} (req: 1-4)")
+    print(f"    [SPADE DEBUG] Top width ratio: {top_width_ratio:.3f} (req: <0.35)")
+    print(f"    [SPADE DEBUG] Middle width ratio: {middle_width_ratio:.3f} (req: >0.65)")
+    print(f"    [SPADE DEBUG] Simetría: {symmetry_score:.3f} (req: >0.75)")
+    print(f"    [SPADE DEBUG] Aspect ratio: {aspect_ratio:.3f} (req: 0.70-1.15)")
+    print(f"    [SPADE DEBUG] Top estrecho: {narrow_top}, Centrado: {centered_peak}")
+    print(f"    [SPADE DEBUG] Middle ancho: {wide_middle}, Simétrica: {is_symmetric}")
+    
+    # SCORE con criterios MÁS ESTRICTOS
     score = 0.0
     
-    # CRITERIO FUNDAMENTAL: Top estrecho + centrado
+    # CRITERIO FUNDAMENTAL 1: Top estrecho + centrado
     if narrow_top and centered_peak:
-        score += 0.70  # PESO ENORME para la característica distintiva
+        score += 0.45  # Base sólida
+        print(f"    [SPADE DEBUG] ✓ Punta estrecha detectada (+0.45)")
         
-        if medium_solidity:
+        # CRITERIO FUNDAMENTAL 2: Middle ancho (distintivo de pica)
+        if wide_middle:
+            score += 0.30  # PESO GRANDE - característico de pica
+            print(f"    [SPADE DEBUG] ✓ Middle ancho detectado (+0.30)")
+        elif middle_width_ratio > 0.55:
             score += 0.15
+            print(f"    [SPADE DEBUG] ~ Middle medio (+0.15)")
         
-        if moderate_defects:
-            score += 0.10
+        # CRITERIO ADICIONAL 3: Simetría alta
+        if is_symmetric:
+            score += 0.15
+            print(f"    [SPADE DEBUG] ✓ Alta simetría (+0.15)")
         
-        if top_width_ratio < 0.30:  # Muy muy estrecho
+        # CRITERIO ADICIONAL 4: Pocos defectos (NO es club)
+        if few_defects:
             score += 0.05
+            print(f"    [SPADE DEBUG] ✓ Pocos defectos (+0.05)")
         
-        print(f"    [SPADE DEBUG] ✓ Punta detectada, score: {score:.3f}")
+        # CRITERIO ADICIONAL 5: Aspect ratio
+        if good_aspect:
+            score += 0.05
+            print(f"    [SPADE DEBUG] ✓ Aspect ratio ok (+0.05)")
+        
+        # BONUS: Top MUY MUY estrecho
+        if top_width_ratio < 0.25:
+            score += 0.05
+            print(f"    [SPADE DEBUG] ✓ Top muy estrecho (+0.05)")
+        
+        print(f"    [SPADE DEBUG] ✓ SCORE TOTAL: {score:.3f}")
     
-    # Penalizar si el top NO es estrecho
-    elif not narrow_top:
+    else:
+        # Si no tiene punta estrecha, NO es pica
+        print(f"    [SPADE DEBUG] ✗ RECHAZADO: No tiene punta estrecha")
         score = 0.0
-        print(f"    [SPADE DEBUG] ✗ RECHAZADO: Top NO es estrecho ({top_width_ratio:.3f} >= 0.35)")
     
-    # REQUIERE ambos: estrecho Y centrado
-    is_spade = (narrow_top and centered_peak)
+    # CONDICIONES FINALES
+    # REQUIERE: punta + middle ancho + simetría
+    is_spade = (narrow_top and centered_peak and 
+                (wide_middle or middle_width_ratio > 0.55) and
+                is_symmetric and
+                few_defects)
+    
+    # O con score muy alto
+    if score >= 0.80:
+        is_spade = True
     
     return is_spade, score
 
@@ -764,7 +905,7 @@ def match_template_multi_method(img, template):
 def match_suit_by_color(img, color):
     """
     Combina detección de patrones con template matching
-    VERSIÓN MEJORADA: Resuelve conflictos spade vs club
+    VERSION MEJORADA: Mejor resolución de conflictos spade vs club
     """
     # PASO 1: Detección por patrones geométricos
     best_by_pattern, pattern_scores = classify_suit_by_pattern(img, color)
@@ -772,64 +913,140 @@ def match_suit_by_color(img, color):
     print(f"  Clasificación por patrón: {best_by_pattern}")
     print(f"  Scores de patrón: {pattern_scores}")
     
-    # PASO 2: Template matching
-    templates = SUIT_TEMPLATES.get(color, {})
+    # PASO 2: Template matching con MÚLTIPLES VARIANTES
+    color_templates = SUIT_TEMPLATES.get(color, {})
     template_scores = {}
     
-    for name, tmpl in templates.items():
-        score = match_template_multi_method(img, tmpl)
-        base_name = name.split('_')[0]
-        if base_name not in template_scores or score > template_scores[base_name]:
-            template_scores[base_name] = score
+    # Comparar contra PRIMARY templates
+    for suit_name, template_list in color_templates.get('primary', {}).items():
+        max_score = 0.0
+        for template in template_list:
+            score = match_template_multi_method(img, template)
+            max_score = max(max_score, score)
+        
+        if suit_name not in template_scores:
+            template_scores[suit_name] = {'primary': [], 'secondary': []}
+        
+        template_scores[suit_name]['primary'].append(max_score)
     
-    print(f"  Scores de template: {template_scores}")
+    # Comparar contra SECONDARY templates (si existen)
+    if len(color_templates.get('secondary', {})) > 0:
+        for suit_name, template_list in color_templates.get('secondary', {}).items():
+            max_score = 0.0
+            for template in template_list:
+                score = match_template_multi_method(img, template)
+                max_score = max(max_score, score)
+            
+            if suit_name not in template_scores:
+                template_scores[suit_name] = {'primary': [], 'secondary': []}
+            
+            template_scores[suit_name]['secondary'].append(max_score)
+    
+    # Calcular scores finales (promedio ponderado)
+    final_template_scores = {}
+    
+    for suit_name, scores_dict in template_scores.items():
+        primary_scores = scores_dict.get('primary', [])
+        secondary_scores = scores_dict.get('secondary', [])
+        
+        primary_avg = max(primary_scores) if primary_scores else 0.0
+        secondary_avg = max(secondary_scores) if secondary_scores else 0.0
+        
+        # Ponderación: Primary 50%, Secondary 50% (equilibrado para suits)
+        if secondary_avg > 0:
+            final_score = 0.50 * primary_avg + 0.50 * secondary_avg
+        else:
+            final_score = primary_avg
+        
+        final_template_scores[suit_name] = final_score
+    
+    print(f"  Scores de template: {final_template_scores}")
     
     # PASO 3: Combinar scores
     final_scores = {}
     possible_suits = ['diamonds', 'hearts'] if color == 'red' else ['spades', 'clubs']
     
-    # NUEVO: Detectar conflicto en palos negros
+    # DETECCIÓN DE CONFLICTOS EN PALOS NEGROS
     if color == 'black':
-        spade_detected = pattern_scores.get('spades', 0.0) > 0.5
-        club_detected = pattern_scores.get('clubs', 0.0) > 0.5
+        spade_score = pattern_scores.get('spades', 0.0)
+        club_score = pattern_scores.get('clubs', 0.0)
         
-        # CONFLICTO: Ambos detectados
-        if spade_detected and club_detected:
-            print(f"  [CONFLICTO] Ambos palos detectados!")
-            print(f"    Spade score: {pattern_scores['spades']:.3f}")
-            print(f"    Club score: {pattern_scores['clubs']:.3f}")
+        # CASO 1: SPADE detectado con alta confianza (>= 0.80)
+        if spade_score >= 0.80:
+            print(f"  [PRIORIDAD] Spade score muy alto ({spade_score:.3f}) → FORZAR SPADE")
             
-            # REGLA: Si club >= 0.85 (3 picos detectados), PRIORIZAR CLUB
-            if pattern_scores['clubs'] >= 0.85:
-                print(f"  [RESOLUCIÓN] Club score muy alto (>=0.85) → FORZAR CLUB")
-                final_scores['clubs'] = pattern_scores['clubs']
-                final_scores['spades'] = 0.0
-                
-                best_suit = 'clubs'
-                best_score = final_scores['clubs']
-                
-                print(f"  [clubs] Final: {best_score:.3f} (FORZADO)")
-                print(f"  [spades] Final: 0.000 (DESCARTADO)")
-                
-                return best_suit, best_score, final_scores
+            # FORZAR SPADE (ignorar club)
+            final_scores['spades'] = spade_score
+            final_scores['clubs'] = 0.0
             
-            # Si no es claro, usar pesos 50-50
-            print(f"  [RESOLUCIÓN] Usar pesos equilibrados (50-50)")
-            weight_pattern = 0.50
-            weight_template = 0.50
-        else:
-            # Sin conflicto: pesos normales
-            weight_pattern = 0.90
-            weight_template = 0.10
+            print(f"  [spades] Final: {spade_score:.3f} (FORZADO)")
+            print(f"  [clubs] Final: 0.000 (DESCARTADO)")
+            
+            return 'spades', spade_score, final_scores
+        
+        # CASO 2: CLUB detectado con alta confianza Y spade bajo
+        if club_score >= 0.85 and spade_score < 0.50:
+            print(f"  [PRIORIDAD] Club score muy alto ({club_score:.3f}) y spade bajo → FORZAR CLUB")
+            
+            final_scores['clubs'] = club_score
+            final_scores['spades'] = 0.0
+            
+            print(f"  [clubs] Final: {club_score:.3f} (FORZADO)")
+            print(f"  [spades] Final: 0.000 (DESCARTADO)")
+            
+            return 'clubs', club_score, final_scores
+        
+        # CASO 3: Conflicto (ambos altos)
+        if spade_score >= 0.70 and club_score >= 0.70:
+            print(f"  [CONFLICTO] Ambos palos altos!")
+            print(f"    Spade: {spade_score:.3f}")
+            print(f"    Club: {club_score:.3f}")
+            
+            # REGLA DE DESEMPATE: Diferencia significativa (>0.15)
+            diff = abs(spade_score - club_score)
+            
+            if diff > 0.15:
+                # Hay un ganador claro
+                if spade_score > club_score:
+                    print(f"  [RESOLUCIÓN] Spade gana por diferencia ({diff:.3f})")
+                    final_scores['spades'] = spade_score
+                    final_scores['clubs'] = 0.0
+                    return 'spades', spade_score, final_scores
+                else:
+                    print(f"  [RESOLUCIÓN] Club gana por diferencia ({diff:.3f})")
+                    final_scores['clubs'] = club_score
+                    final_scores['spades'] = 0.0
+                    return 'clubs', club_score, final_scores
+            else:
+                # Muy cerrado: usar template matching como tiebreaker
+                print(f"  [RESOLUCIÓN] Diferencia pequeña, usar templates...")
+                spade_tmpl = final_template_scores.get('spades', 0.0)  # ← CORRECTO
+                club_tmpl = final_template_scores.get('clubs', 0.0)    # ← CORRECTO
+
+                
+                if spade_tmpl > club_tmpl:
+                    print(f"  [TIEBREAK] Spade gana (template: {spade_tmpl:.3f} vs {club_tmpl:.3f})")
+                    final_scores['spades'] = (spade_score + spade_tmpl) / 2
+                    final_scores['clubs'] = 0.0
+                    return 'spades', final_scores['spades'], final_scores
+                else:
+                    print(f"  [TIEBREAK] Club gana (template: {club_tmpl:.3f} vs {spade_tmpl:.3f})")
+                    final_scores['clubs'] = (club_score + club_tmpl) / 2
+                    final_scores['spades'] = 0.0
+                    return 'clubs', final_scores['clubs'], final_scores
+        
+        # Sin conflicto: pesos normales
+        weight_pattern = 0.90
+        weight_template = 0.10
     else:
         # Rojos: pesos normales siempre
         weight_pattern = 0.90
         weight_template = 0.10
     
-    # Calcular scores finales
+    # Calcular scores finales (sin conflicto)
     for suit in possible_suits:
         pattern_score = pattern_scores.get(suit, 0.0)
-        template_score = template_scores.get(suit, 0.0)
+        template_score = final_template_scores.get(suit, 0.0)
         
         final_score = weight_pattern * pattern_score + weight_template * template_score
         final_scores[suit] = final_score
@@ -847,13 +1064,13 @@ def match_suit_by_color(img, color):
 def extract_suit_roi_dynamic(warp):
     """
     Extrae el ROI del símbolo de palo de forma DINÁMICA
-    VERSION MEJORADA: Detecta mejor en cartas de figuras (J, Q, K)
+    VERSION MEJORADA: Maneja mejor cartas de figuras (J, Q, K)
     """
     h, w = warp.shape[:2]
     
-    # Definir zona de búsqueda (AMPLIADA para cartas de figuras)
-    search_h = int(h * 0.60)  # 60% superior (antes 50%)
-    search_w = int(w * 0.40)  # 40% izquierdo (antes 35%)
+    # Definir zona de búsqueda
+    search_h = int(h * 0.60)
+    search_w = int(w * 0.40)
     search_region = warp[0:search_h, 0:search_w]
     
     # Convertir a escala de grises
@@ -875,8 +1092,8 @@ def extract_suit_roi_dynamic(warp):
         return warp[100:170, 10:60], (10, 100, 60, 170)
     
     # Filtrar contornos válidos
-    min_area = 200  # Área mínima
-    max_area = 3000  # NUEVO: Área máxima (evita capturar figuras grandes)
+    min_area = 200
+    max_area = 3000
     valid_contours = []
     
     for cnt in contours:
@@ -885,9 +1102,8 @@ def extract_suit_roi_dynamic(warp):
             x, y, w_box, h_box = cv2.boundingRect(cnt)
             aspect = float(w_box) / h_box if h_box > 0 else 0
             
-            # NUEVO: Filtrar por aspect ratio razonable
-            # Suits tienen aspect 0.5-1.5 (ni muy anchos ni muy altos)
-            if 0.4 < aspect < 2.0:
+            # Aceptar suits tanto verticales como horizontales
+            if 0.4 < aspect < 2.5:  # Más permisivo
                 valid_contours.append(cnt)
     
     if not valid_contours:
@@ -904,31 +1120,27 @@ def extract_suit_roi_dynamic(warp):
         center_x = x + w_box // 2
         aspect = float(w_box) / h_box if h_box > 0 else 0
         
-        # Calcular score basado en múltiples criterios
         score = 0.0
         
         # 1. Posición vertical (30% weight)
-        # Preferir contornos en el rango [30%-60%] de altura
         rel_pos = center_y / search_h
         if 0.30 < rel_pos < 0.65:
             score += 30 * (1 - abs(rel_pos - 0.45) / 0.15)
         
         # 2. Posición horizontal (20% weight)
-        # Preferir contornos cerca del borde izquierdo (10-30%)
         rel_pos_x = center_x / search_w
         if 0.10 < rel_pos_x < 0.50:
             score += 20 * (1 - abs(rel_pos_x - 0.25) / 0.25)
         
         # 3. Área razonable (25% weight)
-        # Preferir áreas entre 400-1500
         if 400 < area < 1500:
             optimal_area = 800
             score += 25 * (1 - abs(area - optimal_area) / optimal_area)
         
         # 4. Aspect ratio (25% weight)
-        # Preferir aspect ratio entre 0.7-1.3 (cercano a cuadrado)
-        if 0.6 < aspect < 1.4:
-            score += 25 * (1 - abs(aspect - 1.0) / 0.4)
+        # Preferir vertical (0.6-1.3)
+        if 0.6 < aspect < 1.3:
+            score += 25 * (1 - abs(aspect - 0.85) / 0.45)
         
         candidates.append({
             'contour': cnt,
@@ -958,20 +1170,20 @@ def extract_suit_roi_dynamic(warp):
     
     print(f"  [ROI DINÁMICO] ✓ Contorno seleccionado: pos=({x},{y}), size=({w_box}x{h_box}), score={selected['score']:.1f}")
     
-    # Expandir el bounding box un 20% (antes 15%)
-    expansion = 0.20
+    # NUEVO: Expandir MÁS para capturar símbolo completo
+    expansion = 0.25  # 25% (antes 20%)
     x_exp = max(0, int(x - w_box * expansion))
     y_exp = max(0, int(y - h_box * expansion))
     w_exp = min(search_w, int(x + w_box * (1 + expansion)))
     h_exp = min(search_h, int(y + h_box * (1 + expansion)))
     
-    # Asegurar dimensiones mínimas más estrictas
+    # Asegurar dimensiones mínimas MÁS GRANDES
     roi_w = w_exp - x_exp
     roi_h = h_exp - y_exp
     
-    # Forzar tamaño mínimo 50x60 (no 40x50)
-    min_w = 50
-    min_h = 60
+    # Forzar tamaño mínimo 60x70 (antes 50x60)
+    min_w = 60
+    min_h = 70
     
     if roi_w < min_w or roi_h < min_h:
         print(f"  [ROI DINÁMICO] ⚠ ROI pequeño ({roi_w}x{roi_h}), expandiendo a mínimo {min_w}x{min_h}...")
@@ -986,10 +1198,10 @@ def extract_suit_roi_dynamic(warp):
         
         # Ajustar si se sale de límites
         if w_exp > search_w:
-            x_exp = search_w - min_w
+            x_exp = max(0, search_w - min_w)
             w_exp = search_w
         if h_exp > search_h:
-            y_exp = search_h - min_h
+            y_exp = max(0, search_h - min_h)
             h_exp = search_h
     
     # Extraer ROI
@@ -1002,7 +1214,7 @@ def extract_suit_roi_dynamic(warp):
 def recognize_suit(warp):
     """
     Reconoce el palo de una carta desde su imagen warpeada
-    VERSION DEBUG COMPLETA
+    VERSION MEJORADA: Selecciona automáticamente la MEJOR rotación
     """
     print(f"\n{'='*60}")
     print(f"INICIANDO RECONOCIMIENTO DE PALO")
@@ -1010,10 +1222,13 @@ def recognize_suit(warp):
     
     cv2.imwrite("debug_suit_warp_full.png", warp)
     
+    # Extraer ROI de forma DINÁMICA
     suit_roi, roi_coords = extract_suit_roi_dynamic(warp)
     x1, y1, x2, y2 = roi_coords
+    
     cv2.imwrite("debug_suit_roi_original.png", suit_roi)
     
+    # Debug: Mostrar ubicación del ROI
     debug_warp = warp.copy()
     cv2.rectangle(debug_warp, (x1, y1), (x2, y2), (0, 255, 0), 2)
     cv2.putText(debug_warp, 'SUIT ROI', (x1, y1-5), 
@@ -1030,19 +1245,19 @@ def recognize_suit(warp):
     print(f"COLOR DETECTADO: {color.upper()}")
     print(f"{'*'*60}")
     
-    # Preprocesar - REDUCIDO
+    # Preprocesar
     suit_gray = cv2.cvtColor(suit_roi, cv2.COLOR_BGR2GRAY)
     cv2.imwrite("debug_suit_01_gray.png", suit_gray)
     
     _, suit_bin = cv2.threshold(suit_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     cv2.imwrite("debug_suit_02_binary.png", suit_bin)
     
-    # REDUCIR morfología para preservar esquinas
-    kernel = np.ones((2,2), np.uint8)  # Kernel más pequeño (antes 3x3)
-    suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_OPEN, kernel, iterations=1)  # Reducido de 2 a 1
+    # Morfología mínima
+    kernel = np.ones((2, 2), np.uint8)
+    suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_OPEN, kernel, iterations=1)
     cv2.imwrite("debug_suit_03_open.png", suit_bin)
     
-    suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_CLOSE, kernel, iterations=1)  # Reducido de 3 a 1
+    suit_bin = cv2.morphologyEx(suit_bin, cv2.MORPH_CLOSE, kernel, iterations=1)
     cv2.imwrite("debug_suit_04_close.png", suit_bin)
     
     # Extraer contorno principal
@@ -1055,7 +1270,28 @@ def recognize_suit(warp):
     
     cv2.imwrite("debug_suit_05_contour.png", suit_bin)
     
-    suit_bin = cv2.resize(suit_bin, (70, 70))
+    # Resize manteniendo aspect ratio
+    h_roi, w_roi = suit_bin.shape
+    target_size = 70
+    
+    if h_roi > w_roi:
+        scale = target_size / h_roi
+        new_h = target_size
+        new_w = int(w_roi * scale)
+    else:
+        scale = target_size / w_roi
+        new_w = target_size
+        new_h = int(h_roi * scale)
+    
+    suit_bin = cv2.resize(suit_bin, (new_w, new_h))
+    
+    # Centrar en canvas
+    canvas = np.zeros((target_size, target_size), dtype=np.uint8)
+    y_offset = (target_size - new_h) // 2
+    x_offset = (target_size - new_w) // 2
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = suit_bin
+    suit_bin = canvas
+    
     cv2.imwrite("debug_suit_06_resized.png", suit_bin)
     
     # Reconocimiento con rotaciones
@@ -1091,6 +1327,45 @@ def recognize_suit(warp):
             best_suit_score = suit_score
             best_suit_name = suit_name
             best_angle = angle
+    
+    # NUEVA LÓGICA: Si hay EMPATE o confusión, usar criterios adicionales
+    if color == 'black':
+        # Contar cuántas rotaciones votaron por cada palo
+        spade_votes = sum(1 for r in all_rotations_results.values() if r['name'] == 'spades')
+        club_votes = sum(1 for r in all_rotations_results.values() if r['name'] == 'clubs')
+        
+        # Calcular promedio de scores (ignorando rotaciones con score 0)
+        spade_scores = [r['all_scores'].get('spades', 0) for r in all_rotations_results.values() if r['all_scores'].get('spades', 0) > 0]
+        club_scores = [r['all_scores'].get('clubs', 0) for r in all_rotations_results.values() if r['all_scores'].get('clubs', 0) > 0]
+        
+        avg_spade = sum(spade_scores) / len(spade_scores) if spade_scores else 0
+        avg_club = sum(club_scores) / len(club_scores) if club_scores else 0
+        
+        print(f"\n{'='*60}")
+        print(f"ANÁLISIS DE CONSISTENCIA:")
+        print(f"{'='*60}")
+        print(f"  Votos spades: {spade_votes}/4, promedio score: {avg_spade:.3f}")
+        print(f"  Votos clubs: {club_votes}/4, promedio score: {avg_club:.3f}")
+        
+        # Si una tiene MÁS votos consistentes (2+ rotaciones)
+        if spade_votes >= 2 and club_votes <= 1:
+            print(f"  [DECISIÓN] Spades tiene mayoría de votos → SPADES")
+            best_suit_name = 'spades'
+            best_suit_score = avg_spade
+        elif club_votes >= 3:  # Club necesita 3+ votos (más estricto)
+            print(f"  [DECISIÓN] Clubs tiene mayoría absoluta → CLUBS")
+            best_suit_name = 'clubs'
+            best_suit_score = avg_club
+        elif spade_votes == club_votes:
+            # Empate: usar el de mayor score promedio
+            if avg_spade > avg_club * 1.1:  # 10% mejor
+                print(f"  [DESEMPATE] Spades tiene mejor score promedio → SPADES")
+                best_suit_name = 'spades'
+                best_suit_score = avg_spade
+            elif avg_club > avg_spade * 1.1:
+                print(f"  [DESEMPATE] Clubs tiene mejor score promedio → CLUBS")
+                best_suit_name = 'clubs'
+                best_suit_score = avg_club
     
     # RESUMEN FINAL
     print(f"\n{'='*60}")
