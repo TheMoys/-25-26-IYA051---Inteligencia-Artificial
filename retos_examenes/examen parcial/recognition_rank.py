@@ -4,50 +4,74 @@ import os
 
 def load_rank_templates(path='templates/ranks', target_size=(50, 70)):
     """
-    Carga templates y los normaliza INMEDIATAMENTE al mismo tamaño
+    Carga templates con PRIORIDADES (primary → secondary)
+    Cada rank puede tener múltiples variantes
     """
-    templates = {}
+    templates = {
+        'primary': {},
+        'secondary': {}
+    }
     
-    if not os.path.exists(path):
-        print(f"[ERROR] No existe el directorio: {path}")
-        return templates
-    
-    for filename in os.listdir(path):
-        if not filename.lower().endswith('.png'):
+    for priority in ['primary', 'secondary']:
+        priority_path = os.path.join(path, priority)
+        
+        if not os.path.exists(priority_path):
+            print(f"[WARNING] No existe: {priority_path}")
             continue
         
-        filepath = os.path.join(path, filename)
-        img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+        print(f"\n[LOADING {priority.upper()}]")
         
-        if img is None:
-            continue
-        
-        rank_name = os.path.splitext(filename)[0]
-        
-        # Detectar fondo y binarizar
-        mean_val = cv2.mean(img)[0]
-        
-        if mean_val > 127:
-            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
-        else:
-            _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
-        
-        # Limpiar ruido
-        kernel = np.ones((2, 2), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
-        
-        # NORMALIZAR INMEDIATAMENTE
-        normalized = normalize_symbol(binary, target_size)
-        
-        templates[rank_name] = normalized
-        
-        # Guardar para debug
-        cv2.imwrite(f"template_{rank_name}_normalized.png", normalized)
-        
-        print(f"[LOAD] '{rank_name}': normalizado a {target_size}")
+        for filename in os.listdir(priority_path):
+            if not filename.lower().endswith('.png'):
+                continue
+            
+            filepath = os.path.join(priority_path, filename)
+            img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+            
+            if img is None:
+                continue
+            
+            # Extraer nombre del rank (A, 2, K, etc.)
+            # Formato: "A.png" o "A_v2.png" → rank_name = "A"
+            rank_name = filename.split('_')[0].split('.')[0]
+            
+            # Detectar fondo y binarizar
+            mean_val = cv2.mean(img)[0]
+            
+            if mean_val > 127:
+                _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+            else:
+                _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+            
+            # Limpiar ruido
+            kernel = np.ones((2, 2), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+            
+            # NORMALIZAR INMEDIATAMENTE
+            normalized = normalize_symbol(binary, target_size)
+            
+            # Guardar múltiples variantes por rank
+            if rank_name not in templates[priority]:
+                templates[priority][rank_name] = []
+            
+            templates[priority][rank_name].append(normalized)
+            
+            # Guardar para debug
+            variant_num = len(templates[priority][rank_name])
+            cv2.imwrite(f"template_{priority}_{rank_name}_v{variant_num}_normalized.png", normalized)
+            
+            print(f"  [LOAD] {priority}/{rank_name} (variante {variant_num}): {filename}")
     
-    print(f"[INIT] Total templates: {len(templates)}\n")
+    # Resumen
+    total_primary = sum(len(v) for v in templates['primary'].values())
+    total_secondary = sum(len(v) for v in templates['secondary'].values())
+    
+    print(f"\n[SUMMARY]")
+    print(f"  Primary templates: {total_primary}")
+    print(f"  Secondary templates: {total_secondary}")
+    print(f"  Total: {total_primary + total_secondary}\n")
+    
     return templates
 
 def normalize_symbol(binary, target_size=(50, 70)):
@@ -262,7 +286,7 @@ def recognize_rank(warp):
         print("!"*70 + "\n")
         return "10", 1.0
     
-    # Votación simple para el resto
+        # Votación CON MÚLTIPLES VARIANTES
     vote_scores = {}
     
     for version_name, binary in preprocessed:
@@ -272,42 +296,91 @@ def recognize_rank(warp):
         if version_name == 'clahe_otsu':
             cv2.imwrite("debug_rank_normalized.png", normalized)
         
-        # Comparar DIRECTAMENTE contra cada template
-        for rank_name, template in RANK_TEMPLATES.items():
+        # PASO 1: Comparar contra PRIMARY templates
+        for rank_name, template_list in RANK_TEMPLATES['primary'].items():
             # Excluir el 10 del matching normal
             if rank_name == '10':
                 continue
             
-            score = compare_direct(normalized, template)
+            # Comparar contra TODAS las variantes de este rank
+            max_score = 0.0
+            for template in template_list:
+                score = compare_direct(normalized, template)
+                max_score = max(max_score, score)
             
             if rank_name not in vote_scores:
-                vote_scores[rank_name] = []
+                vote_scores[rank_name] = {'primary': [], 'secondary': []}
             
-            vote_scores[rank_name].append(score)
+            vote_scores[rank_name]['primary'].append(max_score)
+        
+        # PASO 2: Comparar contra SECONDARY templates (si existen)
+        if len(RANK_TEMPLATES['secondary']) > 0:
+            for rank_name, template_list in RANK_TEMPLATES['secondary'].items():
+                if rank_name == '10':
+                    continue
+                
+                max_score = 0.0
+                for template in template_list:
+                    score = compare_direct(normalized, template)
+                    max_score = max(max_score, score)
+                
+                if rank_name not in vote_scores:
+                    vote_scores[rank_name] = {'primary': [], 'secondary': []}
+                
+                vote_scores[rank_name]['secondary'].append(max_score)
     
-    # Score final: promedio simple
+    # Score final: PROMEDIO PONDERADO (primary 60%, secondary 40%)
     final_scores = {}
-    for rank_name, scores in vote_scores.items():
-        final_scores[rank_name] = sum(scores) / len(scores) if scores else 0.0
     
-    sorted_results = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
+    for rank_name, scores_dict in vote_scores.items():
+        primary_scores = scores_dict['primary']
+        secondary_scores = scores_dict['secondary']
+        
+        # Calcular promedios
+        primary_avg = sum(primary_scores) / len(primary_scores) if primary_scores else 0.0
+        secondary_avg = sum(secondary_scores) / len(secondary_scores) if secondary_scores else 0.0
+        
+        # Ponderación: Primary 60%, Secondary 40%
+        if secondary_avg > 0:
+            final_score = 0.60 * primary_avg + 0.40 * secondary_avg
+        else:
+            # Si no hay secondary templates, usar solo primary
+            final_score = primary_avg
+        
+        final_scores[rank_name] = {
+            'final': final_score,
+            'primary': primary_avg,
+            'secondary': secondary_avg
+        }
+    
+    # Ordenar por score final
+    sorted_results = sorted(final_scores.items(), key=lambda x: x[1]['final'], reverse=True)
     
     print(f"\n{'='*70}")
-    print("TOP 10 RESULTADOS:")
+    print("TOP 10 RESULTADOS (con desglose primary/secondary):")
     print(f"{'='*70}")
-    for i, (name, score) in enumerate(sorted_results[:10], 1):
+    
+    for i, (name, scores) in enumerate(sorted_results[:10], 1):
         marker = " ← ELEGIDO" if i == 1 else ""
-        bar = "█" * int(score * 50)
-        print(f"  {i:2d}. {name:8s} : {score:.4f} {bar}{marker}")
+        bar = "█" * int(scores['final'] * 50)
+        
+        # Mostrar desglose
+        primary_str = f"P:{scores['primary']:.3f}"
+        secondary_str = f"S:{scores['secondary']:.3f}" if scores['secondary'] > 0 else "S:---"
+        
+        print(f"  {i:2d}. {name:8s} : {scores['final']:.4f} [{primary_str}, {secondary_str}] {bar}{marker}")
     
     if sorted_results:
         best_rank = sorted_results[0][0]
-        best_score = sorted_results[0][1]
+        best_scores = sorted_results[0][1]
         
         print(f"\n{'='*70}")
-        print(f"*** RANK: {best_rank} (confianza: {best_score:.4f}) ***")
+        print(f"*** RANK: {best_rank} ***")
+        print(f"  Confianza final: {best_scores['final']:.4f}")
+        print(f"  Primary: {best_scores['primary']:.4f}")
+        print(f"  Secondary: {best_scores['secondary']:.4f}")
         print(f"{'='*70}\n")
         
-        return best_rank, best_score
+        return best_rank, best_scores['final']
     
     return None, 0.0
