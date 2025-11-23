@@ -844,6 +844,161 @@ def match_suit_by_color(img, color):
     
     return best_by_pattern, pattern_scores.get(best_by_pattern, 0.0), pattern_scores
 
+def extract_suit_roi_dynamic(warp):
+    """
+    Extrae el ROI del símbolo de palo de forma DINÁMICA
+    VERSION MEJORADA: Detecta mejor en cartas de figuras (J, Q, K)
+    """
+    h, w = warp.shape[:2]
+    
+    # Definir zona de búsqueda (AMPLIADA para cartas de figuras)
+    search_h = int(h * 0.60)  # 60% superior (antes 50%)
+    search_w = int(w * 0.40)  # 40% izquierdo (antes 35%)
+    search_region = warp[0:search_h, 0:search_w]
+    
+    # Convertir a escala de grises
+    gray = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
+    
+    # Binarizar
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Limpieza mínima
+    kernel = np.ones((3, 3), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+    
+    # Buscar contornos en la zona de búsqueda
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        print("  [ROI DINÁMICO] ⚠ No se encontraron contornos, usando ROI fijo por defecto")
+        return warp[100:170, 10:60], (10, 100, 60, 170)
+    
+    # Filtrar contornos válidos
+    min_area = 200  # Área mínima
+    max_area = 3000  # NUEVO: Área máxima (evita capturar figuras grandes)
+    valid_contours = []
+    
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if min_area < area < max_area:
+            x, y, w_box, h_box = cv2.boundingRect(cnt)
+            aspect = float(w_box) / h_box if h_box > 0 else 0
+            
+            # NUEVO: Filtrar por aspect ratio razonable
+            # Suits tienen aspect 0.5-1.5 (ni muy anchos ni muy altos)
+            if 0.4 < aspect < 2.0:
+                valid_contours.append(cnt)
+    
+    if not valid_contours:
+        print("  [ROI DINÁMICO] ⚠ No hay contornos válidos, usando ROI fijo")
+        return warp[100:170, 10:60], (10, 100, 60, 170)
+    
+    # NUEVA ESTRATEGIA: Scoring multi-criterio
+    candidates = []
+    
+    for cnt in valid_contours:
+        x, y, w_box, h_box = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+        center_y = y + h_box // 2
+        center_x = x + w_box // 2
+        aspect = float(w_box) / h_box if h_box > 0 else 0
+        
+        # Calcular score basado en múltiples criterios
+        score = 0.0
+        
+        # 1. Posición vertical (30% weight)
+        # Preferir contornos en el rango [30%-60%] de altura
+        rel_pos = center_y / search_h
+        if 0.30 < rel_pos < 0.65:
+            score += 30 * (1 - abs(rel_pos - 0.45) / 0.15)
+        
+        # 2. Posición horizontal (20% weight)
+        # Preferir contornos cerca del borde izquierdo (10-30%)
+        rel_pos_x = center_x / search_w
+        if 0.10 < rel_pos_x < 0.50:
+            score += 20 * (1 - abs(rel_pos_x - 0.25) / 0.25)
+        
+        # 3. Área razonable (25% weight)
+        # Preferir áreas entre 400-1500
+        if 400 < area < 1500:
+            optimal_area = 800
+            score += 25 * (1 - abs(area - optimal_area) / optimal_area)
+        
+        # 4. Aspect ratio (25% weight)
+        # Preferir aspect ratio entre 0.7-1.3 (cercano a cuadrado)
+        if 0.6 < aspect < 1.4:
+            score += 25 * (1 - abs(aspect - 1.0) / 0.4)
+        
+        candidates.append({
+            'contour': cnt,
+            'x': x,
+            'y': y,
+            'w': w_box,
+            'h': h_box,
+            'area': area,
+            'aspect': aspect,
+            'score': score
+        })
+        
+        print(f"  [ROI DINÁMICO] Candidato: pos=({x},{y}), size=({w_box}x{h_box}), area={area:.0f}, aspect={aspect:.2f}, score={score:.1f}")
+    
+    if not candidates:
+        print("  [ROI DINÁMICO] ⚠ Sin candidatos válidos, usando ROI fijo")
+        return warp[100:170, 10:60], (10, 100, 60, 170)
+    
+    # Seleccionar el candidato con mayor score
+    candidates.sort(key=lambda c: c['score'], reverse=True)
+    selected = candidates[0]
+    
+    x = selected['x']
+    y = selected['y']
+    w_box = selected['w']
+    h_box = selected['h']
+    
+    print(f"  [ROI DINÁMICO] ✓ Contorno seleccionado: pos=({x},{y}), size=({w_box}x{h_box}), score={selected['score']:.1f}")
+    
+    # Expandir el bounding box un 20% (antes 15%)
+    expansion = 0.20
+    x_exp = max(0, int(x - w_box * expansion))
+    y_exp = max(0, int(y - h_box * expansion))
+    w_exp = min(search_w, int(x + w_box * (1 + expansion)))
+    h_exp = min(search_h, int(y + h_box * (1 + expansion)))
+    
+    # Asegurar dimensiones mínimas más estrictas
+    roi_w = w_exp - x_exp
+    roi_h = h_exp - y_exp
+    
+    # Forzar tamaño mínimo 50x60 (no 40x50)
+    min_w = 50
+    min_h = 60
+    
+    if roi_w < min_w or roi_h < min_h:
+        print(f"  [ROI DINÁMICO] ⚠ ROI pequeño ({roi_w}x{roi_h}), expandiendo a mínimo {min_w}x{min_h}...")
+        
+        center_x = x + w_box // 2
+        center_y = y + h_box // 2
+        
+        x_exp = max(0, center_x - min_w // 2)
+        y_exp = max(0, center_y - min_h // 2)
+        w_exp = min(search_w, x_exp + min_w)
+        h_exp = min(search_h, y_exp + min_h)
+        
+        # Ajustar si se sale de límites
+        if w_exp > search_w:
+            x_exp = search_w - min_w
+            w_exp = search_w
+        if h_exp > search_h:
+            y_exp = search_h - min_h
+            h_exp = search_h
+    
+    # Extraer ROI
+    roi = search_region[y_exp:h_exp, x_exp:w_exp]
+    
+    print(f"  [ROI DINÁMICO] ✓ ROI final: [{y_exp}:{h_exp}, {x_exp}:{w_exp}] = {roi.shape}")
+    
+    return roi, (x_exp, y_exp, w_exp, h_exp)
+
 def recognize_suit(warp):
     """
     Reconoce el palo de una carta desde su imagen warpeada
@@ -855,15 +1010,18 @@ def recognize_suit(warp):
     
     cv2.imwrite("debug_suit_warp_full.png", warp)
     
-    suit_roi = warp[100:170, 10:60]
+    suit_roi, roi_coords = extract_suit_roi_dynamic(warp)
+    x1, y1, x2, y2 = roi_coords
     cv2.imwrite("debug_suit_roi_original.png", suit_roi)
     
     debug_warp = warp.copy()
-    cv2.rectangle(debug_warp, (10, 100), (60, 170), (0, 255, 0), 2)
+    cv2.rectangle(debug_warp, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    cv2.putText(debug_warp, 'SUIT ROI', (x1, y1-5), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     cv2.imwrite("debug_suit_roi_location.png", debug_warp)
     
     print(f"\nTamaño carta warpeada: {warp.shape}")
-    print(f"ROI extraído: [100:170, 10:60] = {suit_roi.shape}")
+    print(f"ROI extraído: [{y1}:{y2}, {x1}:{x2}] = {suit_roi.shape}")
     
     # Determinar color
     is_red = is_red_suit(suit_roi)

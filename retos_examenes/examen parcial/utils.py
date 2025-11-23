@@ -23,12 +23,10 @@ def enable_debug():
     global _DEBUG_ENABLED
     _DEBUG_ENABLED = True
 
-
 def disable_debug():
     """Deshabilita prints y guardado de imágenes"""
     global _DEBUG_ENABLED
     _DEBUG_ENABLED = False
-
 
 def _suppress_output():
     """Suprime prints y cv2.imwrite temporalmente"""
@@ -42,7 +40,6 @@ def _suppress_output():
         _original_imwrite = cv2.imwrite
     cv2.imwrite = lambda *args, **kwargs: True
 
-
 def _restore_output():
     """Restaura prints y cv2.imwrite"""
     global _original_imwrite
@@ -53,7 +50,6 @@ def _restore_output():
     # Restaurar cv2.imwrite
     if _original_imwrite is not None:
         cv2.imwrite = _original_imwrite
-
 
 def open_video_source(source):
     if isinstance(source, str) and source.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
@@ -72,7 +68,6 @@ def open_video_source(source):
     # VIDEO: Deshabilitar debug
     disable_debug()
     return cap, False
-
 
 def resize_to_display(frame, max_width=DISPLAY_WIDTH, max_height=DISPLAY_HEIGHT):
     """
@@ -94,7 +89,6 @@ def resize_to_display(frame, max_width=DISPLAY_WIDTH, max_height=DISPLAY_HEIGHT)
     
     return resized
 
-
 def order_points(pts):
     """
     Ordena los 4 puntos en orden: top-left, top-right, bottom-right, bottom-left
@@ -108,7 +102,6 @@ def order_points(pts):
     sorted_pts = np.roll(sorted_pts, -tl_idx, axis=0)
     
     return sorted_pts.astype("float32")
-
 
 def four_point_transform(image, pts, w=WARP_WIDTH, h=WARP_HEIGHT):
     """
@@ -145,7 +138,6 @@ def four_point_transform(image, pts, w=WARP_WIDTH, h=WARP_HEIGHT):
     
     return warp
 
-
 def extract_card_contours(mask):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cards = []
@@ -165,7 +157,6 @@ def extract_card_contours(mask):
             cards.append(box)
     return cards
 
-
 def segment_green(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower = np.array([35, 40, 40])
@@ -176,7 +167,6 @@ def segment_green(frame):
     mask_clean = cv2.morphologyEx(mask_inv, cv2.MORPH_OPEN, kernel, iterations=1)
     mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_CLOSE, kernel, iterations=1)
     return mask_clean
-
 
 def process_frame(frame):
     """
