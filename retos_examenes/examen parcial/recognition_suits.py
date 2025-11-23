@@ -510,88 +510,180 @@ def detect_spade_pattern(img):
 
 def detect_club_pattern(img):
     """
-    Detecta trébol: TOP ANCHO (3 círculos)
+    Detecta trébol: 3 CÍRCULOS arriba + tallo abajo
+    VERSIÓN MEJORADA para detectar los 3 lóbulos
     """
     h, w = img.shape
     
-    # Muchos defectos
-    defects_count, max_depth, _ = analyze_convexity_defects(img)
-    some_defects = defects_count >= 2
-    
-    # Baja solidez
     contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        cnt = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(cnt)
-        hull_area = cv2.contourArea(hull)
-        area = cv2.contourArea(cnt)
-        solidity = float(area) / hull_area if hull_area != 0 else 0
-        low_solidity = solidity < 0.85
-    else:
-        low_solidity = False
-        solidity = 0
+    if not contours:
+        return False, 0.0
     
-    # CARACTERÍSTICA CLAVE: Top ANCHO (3 círculos)
-    top_15 = img[:int(h*0.15), :]
-    top_projection = np.sum(top_15, axis=0)
+    cnt = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(cnt)
     
-    wide_top = False
-    top_width_ratio = 0.0
+    if area < 100:
+        return False, 0.0
+    
+    # 1. Defectos de convexidad (hendiduras entre los 3 círculos)
+    hull = cv2.convexHull(cnt, returnPoints=False)
+    
+    try:
+        defects = cv2.convexityDefects(cnt, hull)
+    except:
+        defects = None
+    
+    num_defects = len(defects) if defects is not None else 0
+    
+    # Trébol debe tener MÚLTIPLES defectos (entre los 3 lóbulos)
+    has_multiple_defects = num_defects >= 3
+    
+    # 2. Solidez (área vs hull)
+    hull_area = cv2.contourArea(cv2.convexHull(cnt))
+    solidity = area / hull_area if hull_area > 0 else 0
+    
+    # Trébol tiene solidez alta (forma compacta)
+    high_solidity = solidity > 0.75
+    
+    # 3. Análisis del TOP (donde están los 3 círculos)
+    top_40_percent = int(h * 0.40)
+    top_region = img[:top_40_percent, :]
+    
+    # Proyección horizontal del top
+    top_projection = np.sum(top_region, axis=0)
     
     if len(top_projection) > 0 and np.max(top_projection) > 0:
-        top_projection = top_projection / np.max(top_projection)
-        high_intensity_cols = np.sum(top_projection > 0.35)
-        total_cols = len(top_projection)
-        top_width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 0
+        # Normalizar
+        top_projection = top_projection.astype(float) / np.max(top_projection)
         
-        # Trébol: top ANCHO (>35% de ancho)
-        wide_top = top_width_ratio > 0.35
+        # Buscar PICOS en la proyección (los 3 lóbulos)
+        # Un pico es una columna con valor alto rodeada de valores más bajos
+        peaks = []
+        for i in range(2, len(top_projection) - 2):
+            if top_projection[i] > 0.5:  # Umbral de intensidad
+                # Verificar si es un pico local
+                is_peak = (top_projection[i] >= top_projection[i-1] and 
+                          top_projection[i] >= top_projection[i-2] and
+                          top_projection[i] >= top_projection[i+1] and
+                          top_projection[i] >= top_projection[i+2])
+                
+                # Evitar picos muy cercanos (mismo lóbulo)
+                if is_peak:
+                    if not peaks or (i - peaks[-1] > w * 0.15):
+                        peaks.append(i)
+        
+        num_peaks = len(peaks)
+        
+        # Ancho del top ocupado
+        high_intensity_cols = np.sum(top_projection > 0.3)
+        top_width_ratio = high_intensity_cols / w if w > 0 else 0
+        
+        # Trébol tiene top ANCHO (los 3 círculos ocupan casi todo el ancho)
+        wide_top = top_width_ratio > 0.60
+    else:
+        num_peaks = 0
+        top_width_ratio = 0.0
+        wide_top = False
     
-    # Distribución top-heavy
-    top_70 = img[:int(h*0.7), :]
-    bottom_30 = img[int(h*0.7):, :]
-    top_pixels = cv2.countNonZero(top_70)
-    bottom_pixels = cv2.countNonZero(bottom_30)
-    total = top_pixels + bottom_pixels
-    very_top_heavy = (top_pixels / total > 0.60) if total > 0 else False
+    # 4. Análisis del BOTTOM (tallo)
+    bottom_25_percent = int(h * 0.25)
+    bottom_region = img[h - bottom_25_percent:, :]
     
-    # Debug
-    print(f"    [CLUB DEBUG] Defectos: {defects_count}, Solidez: {solidity:.3f}")
-    print(f"    [CLUB DEBUG] Top width ratio: {top_width_ratio:.3f} (req: >0.35)")
-    print(f"    [CLUB DEBUG] Top ancho: {wide_top}, Top heavy: {very_top_heavy}")
+    # Proyección horizontal del bottom
+    bottom_projection = np.sum(bottom_region, axis=0)
     
-    # Score - PESO MÁXIMO al top ancho
+    if len(bottom_projection) > 0 and np.max(bottom_projection) > 0:
+        bottom_projection = bottom_projection.astype(float) / np.max(bottom_projection)
+        
+        # Ancho del bottom ocupado
+        high_intensity_cols = np.sum(bottom_projection > 0.3)
+        bottom_width_ratio = high_intensity_cols / w if w > 0 else 0
+        
+        # Tallo debe ser ESTRECHO
+        narrow_bottom = bottom_width_ratio < 0.40
+    else:
+        bottom_width_ratio = 0.0
+        narrow_bottom = False
+    
+    # 5. Distribución de masa (top-heavy)
+    top_70_region = img[:int(h * 0.70), :]
+    bottom_30_region = img[int(h * 0.70):, :]
+    
+    top_pixels = cv2.countNonZero(top_70_region)
+    bottom_pixels = cv2.countNonZero(bottom_30_region)
+    total_pixels = top_pixels + bottom_pixels
+    
+    top_mass_ratio = top_pixels / total_pixels if total_pixels > 0 else 0
+    top_heavy = top_mass_ratio > 0.60
+    
+    # Debug detallado
+    print(f"    [CLUB DEBUG] Defectos: {num_defects}, Solidez: {solidity:.3f}")
+    print(f"    [CLUB DEBUG] Picos detectados en top: {num_peaks}")
+    print(f"    [CLUB DEBUG] Top width ratio: {top_width_ratio:.3f} (req: >0.60)")
+    print(f"    [CLUB DEBUG] Bottom width ratio: {bottom_width_ratio:.3f} (req: <0.40)")
+    print(f"    [CLUB DEBUG] Top mass ratio: {top_mass_ratio:.3f} (req: >0.60)")
+    print(f"    [CLUB DEBUG] Wide top: {wide_top}, Narrow bottom: {narrow_bottom}")
+    print(f"    [CLUB DEBUG] Multiple defects: {has_multiple_defects}, Top heavy: {top_heavy}")
+    
+    # SCORE - Sistema de puntos
     score = 0.0
     
-    # CRITERIO FUNDAMENTAL: Top ancho
-    if wide_top:
-        score += 0.70  # PESO ENORME para la característica distintiva
-        
-        if low_solidity:
-            score += 0.15
-        
-        if some_defects:
-            score += 0.10
-        
-        if very_top_heavy:
-            score += 0.05
-        
-        print(f"    [CLUB DEBUG] ✓ Top ancho detectado, score: {score:.3f}")
-    
-    # CAMINO ALTERNATIVO: Sin top ancho visible pero otras características
-    elif very_top_heavy and low_solidity and some_defects:
+    # CRITERIO PRINCIPAL: 3 picos detectados (característica única del trébol)
+    if num_peaks >= 3:
         score += 0.40
-        
-        if top_width_ratio > 0.30:  # Al menos algo ancho
-            score += 0.15
-        
-        print(f"    [CLUB DEBUG] ~ Características secundarias, score: {score:.3f}")
+        print(f"    [CLUB DEBUG] ✓ 3 picos detectados (+0.40)")
+    elif num_peaks == 2:
+        score += 0.20
+        print(f"    [CLUB DEBUG] ~ 2 picos detectados (+0.20)")
+    
+    # CRITERIO FUERTE: Top ancho
+    if wide_top:
+        score += 0.25
+        print(f"    [CLUB DEBUG] ✓ Top ancho (+0.25)")
+    elif top_width_ratio > 0.50:
+        score += 0.15
+        print(f"    [CLUB DEBUG] ~ Top medio (+0.15)")
+    
+    # CRITERIO FUERTE: Múltiples defectos
+    if has_multiple_defects:
+        score += 0.20
+        print(f"    [CLUB DEBUG] ✓ Múltiples defectos (+0.20)")
+    elif num_defects >= 2:
+        score += 0.10
+        print(f"    [CLUB DEBUG] ~ Algunos defectos (+0.10)")
+    
+    # CRITERIO MEDIO: Bottom estrecho
+    if narrow_bottom:
+        score += 0.10
+        print(f"    [CLUB DEBUG] ✓ Bottom estrecho (+0.10)")
+    
+    # CRITERIO MENOR: Top heavy
+    if top_heavy:
+        score += 0.05
+        print(f"    [CLUB DEBUG] ✓ Top heavy (+0.05)")
+    
+    print(f"    [CLUB DEBUG] SCORE FINAL: {score:.3f}")
+    
+    # Condiciones de aceptación
+    is_club = False
+    
+    # CAMINO 1: 3 picos + características adicionales
+    if num_peaks >= 3 and (wide_top or has_multiple_defects):
+        is_club = True
+        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (3 picos)")
+    
+    # CAMINO 2: Top ancho + múltiples defectos + características adicionales
+    elif wide_top and has_multiple_defects and (narrow_bottom or top_heavy):
+        is_club = True
+        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (forma completa)")
+    
+    # CAMINO 3: Score alto suficiente
+    elif score >= 0.70:
+        is_club = True
+        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (score alto)")
     
     else:
-        print(f"    [CLUB DEBUG] ✗ RECHAZADO: Top NO es ancho ({top_width_ratio:.3f} <= 0.35)")
-    
-    # Condición principal: Top ancho
-    is_club = wide_top or (very_top_heavy and low_solidity and some_defects and top_width_ratio > 0.30)
+        print(f"    [CLUB DEBUG] ✗ NO es trébol")
     
     return is_club, score
 
@@ -672,39 +764,74 @@ def match_template_multi_method(img, template):
 def match_suit_by_color(img, color):
     """
     Combina detección de patrones con template matching
-    VERSIÓN MEJORADA: Usa scores individuales para cada palo
+    VERSIÓN MEJORADA: Resuelve conflictos spade vs club
     """
-    # PASO 1: Detección por patrones geométricos (90% peso)
+    # PASO 1: Detección por patrones geométricos
     best_by_pattern, pattern_scores = classify_suit_by_pattern(img, color)
     
     print(f"  Clasificación por patrón: {best_by_pattern}")
     print(f"  Scores de patrón: {pattern_scores}")
     
-    # PASO 2: Template matching (10% peso)
+    # PASO 2: Template matching
     templates = SUIT_TEMPLATES.get(color, {})
     template_scores = {}
     
     for name, tmpl in templates.items():
         score = match_template_multi_method(img, tmpl)
-        # Extraer nombre base (por si tiene sufijos como 'hearts_alt')
         base_name = name.split('_')[0]
         if base_name not in template_scores or score > template_scores[base_name]:
             template_scores[base_name] = score
     
     print(f"  Scores de template: {template_scores}")
     
-    # PASO 3: Combinar scores (90% patrón, 10% template)
+    # PASO 3: Combinar scores
     final_scores = {}
-    
-    # Para cada palo posible según el color
     possible_suits = ['diamonds', 'hearts'] if color == 'red' else ['spades', 'clubs']
     
+    # NUEVO: Detectar conflicto en palos negros
+    if color == 'black':
+        spade_detected = pattern_scores.get('spades', 0.0) > 0.5
+        club_detected = pattern_scores.get('clubs', 0.0) > 0.5
+        
+        # CONFLICTO: Ambos detectados
+        if spade_detected and club_detected:
+            print(f"  [CONFLICTO] Ambos palos detectados!")
+            print(f"    Spade score: {pattern_scores['spades']:.3f}")
+            print(f"    Club score: {pattern_scores['clubs']:.3f}")
+            
+            # REGLA: Si club >= 0.85 (3 picos detectados), PRIORIZAR CLUB
+            if pattern_scores['clubs'] >= 0.85:
+                print(f"  [RESOLUCIÓN] Club score muy alto (>=0.85) → FORZAR CLUB")
+                final_scores['clubs'] = pattern_scores['clubs']
+                final_scores['spades'] = 0.0
+                
+                best_suit = 'clubs'
+                best_score = final_scores['clubs']
+                
+                print(f"  [clubs] Final: {best_score:.3f} (FORZADO)")
+                print(f"  [spades] Final: 0.000 (DESCARTADO)")
+                
+                return best_suit, best_score, final_scores
+            
+            # Si no es claro, usar pesos 50-50
+            print(f"  [RESOLUCIÓN] Usar pesos equilibrados (50-50)")
+            weight_pattern = 0.50
+            weight_template = 0.50
+        else:
+            # Sin conflicto: pesos normales
+            weight_pattern = 0.90
+            weight_template = 0.10
+    else:
+        # Rojos: pesos normales siempre
+        weight_pattern = 0.90
+        weight_template = 0.10
+    
+    # Calcular scores finales
     for suit in possible_suits:
         pattern_score = pattern_scores.get(suit, 0.0)
         template_score = template_scores.get(suit, 0.0)
         
-        # Combinar: 90% patrón + 10% template
-        final_score = 0.90 * pattern_score + 0.10 * template_score
+        final_score = weight_pattern * pattern_score + weight_template * template_score
         final_scores[suit] = final_score
         
         print(f"  [{suit}] Final: {final_score:.3f} (pattern: {pattern_score:.3f}, template: {template_score:.3f})")
