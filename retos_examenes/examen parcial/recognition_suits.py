@@ -489,8 +489,8 @@ def detect_heart_pattern(img):
 
 def detect_spade_pattern(img):
     """
-    Detecta pica: PUNTA ESTRECHA Y CENTRADA arriba + base ancha
-    VERSION MEJORADA: Más estricto y distintivo
+    Detecta pica: FORMA ESPECÍFICA con solidez ALTA
+    VERSION REFINADA: Más estricto con solidez
     """
     h, w = img.shape
     
@@ -500,159 +500,161 @@ def detect_spade_pattern(img):
     
     cnt = max(contours, key=cv2.contourArea)
     
-    # 1. Solidez
+    # 1. Solidez (pica: 0.85-0.92) - MÁS ESTRICTO
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     area = cv2.contourArea(cnt)
     solidity = float(area) / hull_area if hull_area != 0 else 0
     
-    # Picas tienen solidez moderada-alta (0.80-0.92)
-    medium_high_solidity = 0.80 < solidity < 0.93
-    
-    # 2. Defectos de convexidad
+    # 2. Defectos de convexidad (pica: 1-4, club: 8+)
     defects_count, max_depth, _ = analyze_convexity_defects(img)
+    few_defects = 1 <= defects_count <= 5
     
-    # Picas tienen POCOS defectos (2-4, no muchos como club)
-    few_defects = 1 <= defects_count <= 4
+    # 3. Análisis por FRANJAS HORIZONTALES
+    strip_height = h // 5
+    strip_widths = []
     
-    # 3. CARACTERÍSTICA CLAVE: Top ESTRECHO (punta única)
-    top_10 = img[:int(h*0.12), :]  # 12% superior (más preciso)
-    top_projection = np.sum(top_10, axis=0)
-    
-    narrow_top = False
-    centered_peak = False
-    top_width_ratio = 1.0
-    
-    if len(top_projection) > 0 and np.max(top_projection) > 0:
-        top_projection = top_projection / np.max(top_projection)
+    for i in range(5):
+        y_start = i * strip_height
+        y_end = min((i + 1) * strip_height, h)
+        strip = img[y_start:y_end, :]
         
-        # Contar columnas con alta intensidad
-        high_intensity_cols = np.sum(top_projection > 0.5)
-        total_cols = len(top_projection)
-        top_width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 1.0
-        
-        # Pica: top MUY estrecho (< 35% del ancho)
-        narrow_top = top_width_ratio < 0.35
-        
-        # Verificar centrado
-        center = len(top_projection) // 2
-        center_range = range(max(0, center-10), min(len(top_projection), center+10))
-        center_mass = np.sum([top_projection[i] for i in center_range if i < len(top_projection)])
-        total_mass = np.sum(top_projection)
-        centered_peak = (center_mass / total_mass) > 0.35 if total_mass > 0 else False
+        strip_projection = np.sum(strip, axis=0)
+        if len(strip_projection) > 0 and np.max(strip_projection) > 0:
+            strip_projection = strip_projection / np.max(strip_projection)
+            high_intensity_cols = np.sum(strip_projection > 0.5)
+            total_cols = len(strip_projection)
+            width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 0
+            strip_widths.append(width_ratio)
+        else:
+            strip_widths.append(0)
     
-    # 4. NUEVO: Análisis del MIDDLE (zona ensanchada característica de pica)
-    middle_start = int(h * 0.25)
-    middle_end = int(h * 0.60)
-    middle_region = img[middle_start:middle_end, :]
+    top_width = strip_widths[0] if len(strip_widths) > 0 else 0
+    upper_mid_width = strip_widths[1] if len(strip_widths) > 1 else 0
+    middle_width = strip_widths[2] if len(strip_widths) > 2 else 0
+    lower_mid_width = strip_widths[3] if len(strip_widths) > 3 else 0
+    bottom_width = strip_widths[4] if len(strip_widths) > 4 else 0
     
-    middle_projection = np.sum(middle_region, axis=0)
+    print(f"    [SPADE STRIPS] Anchos por franja:")
+    print(f"      Top (0-20%):      {top_width:.3f}")
+    print(f"      Upper-mid (20-40%): {upper_mid_width:.3f}")
+    print(f"      Middle (40-60%):    {middle_width:.3f}")
+    print(f"      Lower-mid (60-80%): {lower_mid_width:.3f}")
+    print(f"      Bottom (80-100%):   {bottom_width:.3f}")
     
-    wide_middle = False
-    middle_width_ratio = 0.0
+    # Criterios de pica
+    top_narrower = top_width < middle_width * 0.85
+    max_width_in_middle = max(upper_mid_width, middle_width) > max(top_width, lower_mid_width, bottom_width)
+    bottom_narrowest = bottom_width < min(top_width, middle_width) * 0.85 if middle_width > 0 else False
+    grows_to_middle = upper_mid_width > top_width * 0.90
+    shrinks_to_bottom = lower_mid_width < middle_width * 0.90
     
-    if len(middle_projection) > 0 and np.max(middle_projection) > 0:
-        middle_projection = middle_projection / np.max(middle_projection)
-        high_intensity_cols = np.sum(middle_projection > 0.5)
-        total_cols = len(middle_projection)
-        middle_width_ratio = high_intensity_cols / total_cols if total_cols > 0 else 0.0
-        
-        # Pica: middle ANCHO (> 65% del ancho) - característica distintiva vs club
-        wide_middle = middle_width_ratio > 0.65
+    print(f"    [SPADE PATTERN]")
+    print(f"      Top narrower than middle: {top_narrower}")
+    print(f"      Max width in middle: {max_width_in_middle}")
+    print(f"      Bottom narrowest: {bottom_narrowest}")
+    print(f"      Grows to middle: {grows_to_middle}")
+    print(f"      Shrinks to bottom: {shrinks_to_bottom}")
     
-    # 5. NUEVO: Análisis de SIMETRÍA vertical
+    # 4. Simetría
     left_half = img[:, :w//2]
     right_half = cv2.flip(img[:, w//2:], 1)
     
-    # Asegurar que ambas mitades tengan el mismo tamaño
     min_width = min(left_half.shape[1], right_half.shape[1])
     left_half = left_half[:, :min_width]
     right_half = right_half[:, :min_width]
     
-    # Comparar simetría
     difference = cv2.absdiff(left_half, right_half)
     symmetry_score = 1.0 - (np.mean(difference) / 255.0)
     
-    # Pica es MUY simétrica
-    is_symmetric = symmetry_score > 0.75
+    is_symmetric = symmetry_score > 0.70
     
-    # 6. Aspect ratio del bounding box
+    # 5. Aspect ratio
     x, y, w_box, h_box = cv2.boundingRect(cnt)
     aspect_ratio = float(w_box) / h_box if h_box > 0 else 0
+    good_aspect = 0.60 < aspect_ratio < 1.30
     
-    # Pica tiene aspect ratio cercano a 1 o ligeramente vertical
-    good_aspect = 0.70 < aspect_ratio < 1.15
+    print(f"    [SPADE DEBUG] Solidez: {solidity:.3f} (req: 0.82-0.93)")
+    print(f"    [SPADE DEBUG] Defectos: {defects_count} (req: 1-5)")
+    print(f"    [SPADE DEBUG] Simetría: {symmetry_score:.3f}")
+    print(f"    [SPADE DEBUG] Aspect: {aspect_ratio:.3f}")
     
-    # Debug detallado
-    print(f"    [SPADE DEBUG] Solidez: {solidity:.3f} (req: 0.80-0.93)")
-    print(f"    [SPADE DEBUG] Defectos: {defects_count} (req: 1-4)")
-    print(f"    [SPADE DEBUG] Top width ratio: {top_width_ratio:.3f} (req: <0.35)")
-    print(f"    [SPADE DEBUG] Middle width ratio: {middle_width_ratio:.3f} (req: >0.65)")
-    print(f"    [SPADE DEBUG] Simetría: {symmetry_score:.3f} (req: >0.75)")
-    print(f"    [SPADE DEBUG] Aspect ratio: {aspect_ratio:.3f} (req: 0.70-1.15)")
-    print(f"    [SPADE DEBUG] Top estrecho: {narrow_top}, Centrado: {centered_peak}")
-    print(f"    [SPADE DEBUG] Middle ancho: {wide_middle}, Simétrica: {is_symmetric}")
+    # BLOQUEO CRÍTICO: Solidez baja = NO es pica
+    if solidity < 0.78:
+        print(f"    [SPADE DEBUG] ✗ BLOQUEADO: Solidez muy baja ({solidity:.3f} < 0.78)")
+        print(f"    [SPADE DEBUG]    Probablemente es TRÉBOL (múltiples lóbulos)")
+        return False, 0.0
     
-    # SCORE con criterios MÁS ESTRICTOS
+    # Scoring
     score = 0.0
     
-    # CRITERIO FUNDAMENTAL 1: Top estrecho + centrado
-    if narrow_top and centered_peak:
-        score += 0.45  # Base sólida
-        print(f"    [SPADE DEBUG] ✓ Punta estrecha detectada (+0.45)")
+    if top_narrower and max_width_in_middle:
+        score += 0.20
+        print(f"    [SPADE DEBUG] ✓ Patrón ensanchado (+0.20)")
         
-        # CRITERIO FUNDAMENTAL 2: Middle ancho (distintivo de pica)
-        if wide_middle:
-            score += 0.30  # PESO GRANDE - característico de pica
-            print(f"    [SPADE DEBUG] ✓ Middle ancho detectado (+0.30)")
-        elif middle_width_ratio > 0.55:
-            score += 0.15
-            print(f"    [SPADE DEBUG] ~ Middle medio (+0.15)")
+        if grows_to_middle:
+            score += 0.10
+            print(f"    [SPADE DEBUG] ✓ Crece hacia middle (+0.10)")
         
-        # CRITERIO ADICIONAL 3: Simetría alta
-        if is_symmetric:
-            score += 0.15
-            print(f"    [SPADE DEBUG] ✓ Alta simetría (+0.15)")
-        
-        # CRITERIO ADICIONAL 4: Pocos defectos (NO es club)
-        if few_defects:
+        if shrinks_to_bottom:
             score += 0.05
-            print(f"    [SPADE DEBUG] ✓ Pocos defectos (+0.05)")
-        
-        # CRITERIO ADICIONAL 5: Aspect ratio
-        if good_aspect:
-            score += 0.05
-            print(f"    [SPADE DEBUG] ✓ Aspect ratio ok (+0.05)")
-        
-        # BONUS: Top MUY MUY estrecho
-        if top_width_ratio < 0.25:
-            score += 0.05
-            print(f"    [SPADE DEBUG] ✓ Top muy estrecho (+0.05)")
-        
-        print(f"    [SPADE DEBUG] ✓ SCORE TOTAL: {score:.3f}")
+            print(f"    [SPADE DEBUG] ✓ Decrece hacia bottom (+0.05)")
     
-    else:
-        # Si no tiene punta estrecha, NO es pica
-        print(f"    [SPADE DEBUG] ✗ RECHAZADO: No tiene punta estrecha")
-        score = 0.0
+    if bottom_narrowest:
+        score += 0.15  # Reducido de 0.20
+        print(f"    [SPADE DEBUG] ✓ Bottom muy estrecho (+0.15)")
     
-    # CONDICIONES FINALES
-    # REQUIERE: punta + middle ancho + simetría
-    is_spade = (narrow_top and centered_peak and 
-                (wide_middle or middle_width_ratio > 0.55) and
-                is_symmetric and
-                few_defects)
+    if few_defects:
+        score += 0.20
+        print(f"    [SPADE DEBUG] ✓ Pocos defectos (+0.20)")
     
-    # O con score muy alto
-    if score >= 0.80:
+    if is_symmetric:
+        score += 0.15
+        print(f"    [SPADE DEBUG] ✓ Simétrica (+0.15)")
+    
+    # NUEVO: Bonus por solidez ALTA (característico de pica)
+    if solidity > 0.85:
+        score += 0.15
+        print(f"    [SPADE DEBUG] ✓ Solidez alta (+0.15)")
+    elif solidity > 0.82:
+        score += 0.10
+        print(f"    [SPADE DEBUG] ✓ Solidez ok (+0.10)")
+    
+    if good_aspect:
+        score += 0.05
+        print(f"    [SPADE DEBUG] ✓ Aspect ok (+0.05)")
+    
+    # Bonus patrón perfecto
+    if top_narrower and max_width_in_middle and bottom_narrowest and few_defects and is_symmetric and solidity > 0.82:
+        score += 0.05
+        print(f"    [SPADE DEBUG] ✓ PATRÓN PERFECTO (+0.05)")
+    
+    print(f"    [SPADE DEBUG] SCORE FINAL: {score:.3f}")
+    
+    # Condición de aceptación MÁS ESTRICTA
+    is_spade = (
+        solidity > 0.82 and  # CRÍTICO: Alta solidez
+        top_narrower and 
+        max_width_in_middle and 
+        few_defects and 
+        is_symmetric and
+        (bottom_narrowest or shrinks_to_bottom)
+    )
+    
+    # O score MUY alto
+    if score >= 0.80 and solidity > 0.80:  # Ambas condiciones
         is_spade = True
+        print(f"    [SPADE DEBUG] ✓ PICA CONFIRMADA")
+    
+    if not is_spade:
+        print(f"    [SPADE DEBUG] ✗ NO ES PICA")
     
     return is_spade, score
 
 def detect_club_pattern(img):
     """
-    Detecta trébol: 3 CÍRCULOS arriba + tallo abajo
-    VERSIÓN MEJORADA para detectar los 3 lóbulos
+    Detecta trébol: BAJA solidez (múltiples lóbulos) + forma característica
+    VERSION REFINADA: Usa SOLIDEZ BAJA como indicador principal
     """
     h, w = img.shape
     
@@ -666,160 +668,123 @@ def detect_club_pattern(img):
     if area < 100:
         return False, 0.0
     
-    # 1. Defectos de convexidad (hendiduras entre los 3 círculos)
-    hull = cv2.convexHull(cnt, returnPoints=False)
+    # 1. CRITERIO FUNDAMENTAL: Solidez BAJA (múltiples lóbulos)
+    hull = cv2.convexHull(cnt)
+    hull_area = cv2.contourArea(hull)
+    solidity = area / hull_area if hull_area > 0 else 0
+    
+    # Trébol tiene solidez BAJA (los 3 lóbulos crean huecos)
+    low_solidity = solidity < 0.82  # Característico de trébol
+    
+    # 2. Defectos de convexidad (hendiduras entre lóbulos)
+    hull_indices = cv2.convexHull(cnt, returnPoints=False)
     
     try:
-        defects = cv2.convexityDefects(cnt, hull)
+        defects = cv2.convexityDefects(cnt, hull_indices)
     except:
         defects = None
     
     num_defects = len(defects) if defects is not None else 0
+    has_multiple_defects = num_defects >= 5  # Más estricto
     
-    # Trébol debe tener MÚLTIPLES defectos (entre los 3 lóbulos)
-    has_multiple_defects = num_defects >= 3
+    # 3. Análisis de TODA la imagen (no solo top)
+    # El trébol puede estar orientado de cualquier forma
     
-    # 2. Solidez (área vs hull)
-    hull_area = cv2.contourArea(cv2.convexHull(cnt))
-    solidity = area / hull_area if hull_area > 0 else 0
-    
-    # Trébol tiene solidez alta (forma compacta)
-    high_solidity = solidity > 0.75
-    
-    # 3. Análisis del TOP (donde están los 3 círculos)
-    top_40_percent = int(h * 0.40)
-    top_region = img[:top_40_percent, :]
-    
-    # Proyección horizontal del top
-    top_projection = np.sum(top_region, axis=0)
-    
-    if len(top_projection) > 0 and np.max(top_projection) > 0:
-        # Normalizar
-        top_projection = top_projection.astype(float) / np.max(top_projection)
-        
-        # Buscar PICOS en la proyección (los 3 lóbulos)
-        # Un pico es una columna con valor alto rodeada de valores más bajos
-        peaks = []
-        for i in range(2, len(top_projection) - 2):
-            if top_projection[i] > 0.5:  # Umbral de intensidad
-                # Verificar si es un pico local
-                is_peak = (top_projection[i] >= top_projection[i-1] and 
-                          top_projection[i] >= top_projection[i-2] and
-                          top_projection[i] >= top_projection[i+1] and
-                          top_projection[i] >= top_projection[i+2])
-                
-                # Evitar picos muy cercanos (mismo lóbulo)
-                if is_peak:
-                    if not peaks or (i - peaks[-1] > w * 0.15):
-                        peaks.append(i)
-        
-        num_peaks = len(peaks)
-        
-        # Ancho del top ocupado
-        high_intensity_cols = np.sum(top_projection > 0.3)
-        top_width_ratio = high_intensity_cols / w if w > 0 else 0
-        
-        # Trébol tiene top ANCHO (los 3 círculos ocupan casi todo el ancho)
-        wide_top = top_width_ratio > 0.60
+    # Calcular centroide
+    M = cv2.moments(cnt)
+    if M["m00"] != 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
     else:
-        num_peaks = 0
-        top_width_ratio = 0.0
-        wide_top = False
+        cx, cy = w // 2, h // 2
     
-    # 4. Análisis del BOTTOM (tallo)
-    bottom_25_percent = int(h * 0.25)
-    bottom_region = img[h - bottom_25_percent:, :]
+    # Dividir en 4 cuadrantes desde el centro
+    top_half = img[:cy, :]
+    bottom_half = img[cy:, :]
     
-    # Proyección horizontal del bottom
-    bottom_projection = np.sum(bottom_region, axis=0)
-    
-    if len(bottom_projection) > 0 and np.max(bottom_projection) > 0:
-        bottom_projection = bottom_projection.astype(float) / np.max(bottom_projection)
-        
-        # Ancho del bottom ocupado
-        high_intensity_cols = np.sum(bottom_projection > 0.3)
-        bottom_width_ratio = high_intensity_cols / w if w > 0 else 0
-        
-        # Tallo debe ser ESTRECHO
-        narrow_bottom = bottom_width_ratio < 0.40
-    else:
-        bottom_width_ratio = 0.0
-        narrow_bottom = False
-    
-    # 5. Distribución de masa (top-heavy)
-    top_70_region = img[:int(h * 0.70), :]
-    bottom_30_region = img[int(h * 0.70):, :]
-    
-    top_pixels = cv2.countNonZero(top_70_region)
-    bottom_pixels = cv2.countNonZero(bottom_30_region)
+    top_pixels = cv2.countNonZero(top_half)
+    bottom_pixels = cv2.countNonZero(bottom_half)
     total_pixels = top_pixels + bottom_pixels
     
-    top_mass_ratio = top_pixels / total_pixels if total_pixels > 0 else 0
-    top_heavy = top_mass_ratio > 0.60
+    # Trébol puede tener masa distribuida (no necesariamente top-heavy)
+    balanced_mass = 0.35 < (top_pixels / total_pixels) < 0.75 if total_pixels > 0 else False
     
-    # Debug detallado
-    print(f"    [CLUB DEBUG] Defectos: {num_defects}, Solidez: {solidity:.3f}")
-    print(f"    [CLUB DEBUG] Picos detectados en top: {num_peaks}")
-    print(f"    [CLUB DEBUG] Top width ratio: {top_width_ratio:.3f} (req: >0.60)")
-    print(f"    [CLUB DEBUG] Bottom width ratio: {bottom_width_ratio:.3f} (req: <0.40)")
-    print(f"    [CLUB DEBUG] Top mass ratio: {top_mass_ratio:.3f} (req: >0.60)")
-    print(f"    [CLUB DEBUG] Wide top: {wide_top}, Narrow bottom: {narrow_bottom}")
-    print(f"    [CLUB DEBUG] Multiple defects: {has_multiple_defects}, Top heavy: {top_heavy}")
+    # 4. Aspect ratio
+    x, y, w_box, h_box = cv2.boundingRect(cnt)
+    aspect_ratio = float(w_box) / h_box if h_box > 0 else 0
     
-    # SCORE - Sistema de puntos
+    # Trébol tiende a ser más redondeado
+    roundish = 0.70 < aspect_ratio < 1.30
+    
+    # 5. Análisis de complejidad del contorno
+    perimeter = cv2.arcLength(cnt, True)
+    circularity = 4 * np.pi * area / (perimeter ** 2) if perimeter > 0 else 0
+    
+    # Trébol tiene circularidad baja (forma compleja)
+    complex_shape = circularity < 0.75
+    
+    # Debug
+    print(f"    [CLUB DEBUG] Solidez: {solidity:.3f} (req: <0.82)")
+    print(f"    [CLUB DEBUG] Defectos: {num_defects} (req: >=5)")
+    print(f"    [CLUB DEBUG] Circularidad: {circularity:.3f} (req: <0.75)")
+    print(f"    [CLUB DEBUG] Aspect ratio: {aspect_ratio:.3f}")
+    print(f"    [CLUB DEBUG] Masa balanceada: {balanced_mass}")
+    print(f"    [CLUB DEBUG] Low solidity: {low_solidity}, Multiple defects: {has_multiple_defects}")
+    print(f"    [CLUB DEBUG] Complex shape: {complex_shape}, Roundish: {roundish}")
+    
+    # Scoring
     score = 0.0
     
-    # CRITERIO PRINCIPAL: 3 picos detectados (característica única del trébol)
-    if num_peaks >= 3:
-        score += 0.40
-        print(f"    [CLUB DEBUG] ✓ 3 picos detectados (+0.40)")
-    elif num_peaks == 2:
-        score += 0.20
-        print(f"    [CLUB DEBUG] ~ 2 picos detectados (+0.20)")
+    # CRITERIO 1: Solidez BAJA (35% - FUNDAMENTAL)
+    if low_solidity:
+        score += 0.35
+        print(f"    [CLUB DEBUG] ✓ Solidez baja (+0.35) - Múltiples lóbulos")
+        
+        # Bonus por solidez MUY baja
+        if solidity < 0.75:
+            score += 0.10
+            print(f"    [CLUB DEBUG] ✓ Solidez muy baja (+0.10)")
     
-    # CRITERIO FUERTE: Top ancho
-    if wide_top:
-        score += 0.25
-        print(f"    [CLUB DEBUG] ✓ Top ancho (+0.25)")
-    elif top_width_ratio > 0.50:
-        score += 0.15
-        print(f"    [CLUB DEBUG] ~ Top medio (+0.15)")
-    
-    # CRITERIO FUERTE: Múltiples defectos
+    # CRITERIO 2: Múltiples defectos (25%)
     if has_multiple_defects:
+        score += 0.25
+        print(f"    [CLUB DEBUG] ✓ Múltiples defectos (+0.25)")
+    elif num_defects >= 3:
+        score += 0.15
+        print(f"    [CLUB DEBUG] ~ Algunos defectos (+0.15)")
+    
+    # CRITERIO 3: Forma compleja (20%)
+    if complex_shape:
         score += 0.20
-        print(f"    [CLUB DEBUG] ✓ Múltiples defectos (+0.20)")
-    elif num_defects >= 2:
-        score += 0.10
-        print(f"    [CLUB DEBUG] ~ Algunos defectos (+0.10)")
+        print(f"    [CLUB DEBUG] ✓ Forma compleja (+0.20)")
     
-    # CRITERIO MEDIO: Bottom estrecho
-    if narrow_bottom:
+    # CRITERIO 4: Forma redondeada (10%)
+    if roundish:
         score += 0.10
-        print(f"    [CLUB DEBUG] ✓ Bottom estrecho (+0.10)")
+        print(f"    [CLUB DEBUG] ✓ Forma redondeada (+0.10)")
     
-    # CRITERIO MENOR: Top heavy
-    if top_heavy:
-        score += 0.05
-        print(f"    [CLUB DEBUG] ✓ Top heavy (+0.05)")
+    # CRITERIO 5: Masa balanceada (10%)
+    if balanced_mass:
+        score += 0.10
+        print(f"    [CLUB DEBUG] ✓ Masa balanceada (+0.10)")
     
     print(f"    [CLUB DEBUG] SCORE FINAL: {score:.3f}")
     
-    # Condiciones de aceptación
+    # Condición de aceptación
     is_club = False
     
-    # CAMINO 1: 3 picos + características adicionales
-    if num_peaks >= 3 and (wide_top or has_multiple_defects):
+    # CAMINO 1: Solidez baja + defectos múltiples (característico)
+    if low_solidity and has_multiple_defects:
         is_club = True
-        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (3 picos)")
+        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (solidez baja + defectos)")
     
-    # CAMINO 2: Top ancho + múltiples defectos + características adicionales
-    elif wide_top and has_multiple_defects and (narrow_bottom or top_heavy):
+    # CAMINO 2: Solidez baja + forma compleja
+    elif low_solidity and complex_shape and num_defects >= 3:
         is_club = True
-        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (forma completa)")
+        print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (solidez + complejidad)")
     
-    # CAMINO 3: Score alto suficiente
-    elif score >= 0.70:
+    # CAMINO 3: Score alto
+    elif score >= 0.65:
         is_club = True
         print(f"    [CLUB DEBUG] ✓ TRÉBOL CONFIRMADO (score alto)")
     
@@ -1022,7 +987,6 @@ def match_suit_by_color(img, color):
                 print(f"  [RESOLUCIÓN] Diferencia pequeña, usar templates...")
                 spade_tmpl = final_template_scores.get('spades', 0.0)  # ← CORRECTO
                 club_tmpl = final_template_scores.get('clubs', 0.0)    # ← CORRECTO
-
                 
                 if spade_tmpl > club_tmpl:
                     print(f"  [TIEBREAK] Spade gana (template: {spade_tmpl:.3f} vs {club_tmpl:.3f})")
