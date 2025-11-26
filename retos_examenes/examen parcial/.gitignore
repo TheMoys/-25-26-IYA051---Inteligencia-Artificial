@@ -17,8 +17,6 @@ __pycache__/
 captures/
 output/
 results/
-*.jpg
-*.png
 *.bmp
 *.tiff
 *.jpeg
