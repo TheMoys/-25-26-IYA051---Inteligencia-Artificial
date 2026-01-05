@@ -1,0 +1,80 @@
+# Entornos virtuales de Python
+venv/
+env/
+ENV/
+.venv/
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Modelos entrenados (archivos grandes)
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.pb
+
+# Datasets (no subir datos grandes)
+dataset/
+data/
+datasets/
+DatasetCompleto*/
+*.csv
+*.json
+*.parquet
+
+# Archivos de caché
+.cache/
+*.log
+*.sqlite
+*.db
+
+# Directorios de salida y temporales
+outputs/
+temp/
+tmp/
+checkpoints/
+logs/
+captures/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# IDEs y editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# TensorFlow/Keras
+*.ckpt
+*.index
+*.meta
+saved_model/
+
+# Imágenes generadas
+*.png
+*.jpg
+*.jpeg
+*.gif
+!templates/**/*.png
+!referencia/**/*.png
+
+# Archivos de configuración local
+.env
+config.local.json
+
+# Archivos de sistema
+Thumbs.db
+desktop.ini
