@@ -1,8 +1,9 @@
 import tkinter as tk
 from tkinter import filedialog
 import tensorflow as tf
+import os
 from model_training import train_model
-from predict import predict_image, predict_folder
+from predict import predict_image, predict_folder, debug_segmentation
 
 
 def train_interface():
@@ -10,6 +11,16 @@ def train_interface():
     Llama al entrenamiento manualmente a través de la interfaz gráfica.
     """
     train_model()
+
+
+def debug_interface():
+    """
+    Muestra el proceso de segmentación paso a paso.
+    """
+    image_path = filedialog.askopenfilename(title="Selecciona una imagen para debug")
+    if image_path:
+        print(f"🔍 Analizando: {image_path}")
+        debug_segmentation(image_path)
 
 
 def predict_letter():
@@ -43,25 +54,44 @@ def predict_from_folder():
         else:
             print("No se procesaron imágenes válidas o precisión es 0%.")
 
-# Entrenamiento automático al inicio
-print("Iniciando entrenamiento automático del modelo...")
-train_model()
-print("Entrenamiento completado.")
+
+# Verificar si el modelo existe antes de entrenar
+if not os.path.exists("ocr_model.h5"):
+    print("⚠️  Modelo no encontrado. Iniciando entrenamiento automático...")
+    train_model()
+    print("✅ Entrenamiento completado y modelo guardado.")
+else:
+    print("✅ Modelo encontrado. Cargando modelo existente...")
+    # No hacer nada, el modelo ya existe
 
 # Configuración de la interfaz gráfica
 root = tk.Tk()
 root.title("OCR Predictor")
+root.geometry("300x350")  # Tamaño de ventana más grande
 
-button_letter = tk.Button(root, text="Predecir Letra", command=predict_letter)
-button_letter.pack()
+# Botón de DEBUG (nuevo) - en color azul para destacarlo
+button_debug = tk.Button(root, text="🔍 Debug Segmentación", command=debug_interface, bg="lightblue", font=("Arial", 10, "bold"))
+button_debug.pack(pady=10)
 
-button_number = tk.Button(root, text="Predecir Número", command=predict_number)
-button_number.pack()
+# Separador visual
+separator = tk.Label(root, text="─" * 30)
+separator.pack()
 
-button_phrase = tk.Button(root, text="Predecir Frase", command=predict_phrase)
-button_phrase.pack()
+# Botón para re-entrenar manualmente si es necesario
+button_train = tk.Button(root, text="🔄 Re-entrenar Modelo", command=train_interface, bg="orange")
+button_train.pack(pady=5)
 
-button_folder = tk.Button(root, text="Predecir Carpeta", command=predict_from_folder)
-button_folder.pack()
+# Botones de predicción
+button_letter = tk.Button(root, text="Predecir Letra", command=predict_letter, width=20)
+button_letter.pack(pady=3)
+
+button_number = tk.Button(root, text="Predecir Número", command=predict_number, width=20)
+button_number.pack(pady=3)
+
+button_phrase = tk.Button(root, text="Predecir Frase", command=predict_phrase, width=20)
+button_phrase.pack(pady=3)
+
+button_folder = tk.Button(root, text="Predecir Carpeta", command=predict_from_folder, width=20)
+button_folder.pack(pady=3)
 
 root.mainloop()

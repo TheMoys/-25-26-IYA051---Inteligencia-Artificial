@@ -4,6 +4,68 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+def scanner_preprocess(image_path):
+    """
+    Preprocesamiento tipo escáner profesional (versión ajustada).
+    """
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    
+    # 1. Corrección de iluminación
+    kernel_size = 51
+    background = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+    img_corrected = cv2.divide(img, background, scale=255)
+    
+    # 2. CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img_clahe = clahe.apply(img_corrected)
+    
+    # 3. Denoise más suave (NO tan agresivo)
+    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=7, templateWindowSize=7, searchWindowSize=21)
+    
+    # 4. Binarización Otsu
+    _, binary = cv2.threshold(img_denoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # 5. Limpieza morfológica MÁS SUAVE
+    # Solo eliminar puntos muy pequeños
+    kernel_open = np.ones((2, 2), np.uint8)  # ← Kernel más pequeño
+    binary_clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
+    
+    # NO aplicar dilate/erode adicional para no destruir las letras
+    
+    # 6. Eliminar componentes pequeños PERO MÁS PERMISIVO
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_clean, connectivity=8)
+    
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    
+    if len(areas) > 0:
+        # Calcular tamaño de imagen para determinar umbral adaptativo
+        img_height, img_width = img.shape
+        
+        # Umbral mínimo basado en tamaño de imagen (MUCHO MÁS PERMISIVO)
+        min_area_absolute = (img_height * img_width) * 0.0001  # 0.01% del área total
+        
+        # Si hay componentes grandes, usar 1% del componente más grande
+        max_area = np.max(areas)
+        min_area_threshold = max(min_area_absolute, max_area * 0.01)  # ← MUCHO MÁS PERMISIVO
+        
+        # Crear máscara limpia conservando componentes grandes
+        clean_binary = np.zeros_like(binary_clean)
+        
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            
+            # Mantener componentes suficientemente grandes
+            if area >= min_area_threshold:
+                clean_binary[labels == i] = 255
+        
+        # Verificar si quedó algo
+        if np.sum(clean_binary) < 100:  # Si casi no hay píxeles blancos
+            print("⚠️ Limpieza demasiado agresiva, devolviendo binarización sin limpieza")
+            return binary_clean  # Devolver sin limpieza de componentes
+        
+        return clean_binary
+    else:
+        return binary_clean
 
 def preprocess_image(img):
     """
@@ -15,39 +77,173 @@ def preprocess_image(img):
     img = cv2.equalizeHist(img)
     return img
 
-
-def segment_image(image_path):
+def segment_image(image_path): q
     """
-    Segmenta caracteres de una imagen en escala de grises.
+    Segmenta caracteres usando preprocesamiento tipo escáner.
     """
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    img = preprocess_image(img)
-
-    _, thresh = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
-    kernel = np.ones((2, 2), np.uint8)
-    thresh = cv2.dilate(thresh, kernel, iterations=1)
-    thresh = cv2.erode(thresh, kernel, iterations=1)
-
+    original = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    
+    # USAR PREPROCESAMIENTO TIPO ESCÁNER
+    thresh = scanner_preprocess(image_path)
+    
+    print("✅ Preprocesamiento tipo escáner completado")
+    
+    # Encontrar contornos
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    char_images = []
-    bounding_boxes = []
+    
+    print(f"🔍 Contornos detectados: {len(contours)}")
+    
+    if len(contours) == 0:
+        print("⚠️ No se detectaron contornos")
+        return np.array([]), []
+    
+    # Estadísticas de imagen
+    img_height, img_width = thresh.shape
+    
+    # Recolectar candidatos
+    candidates = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        if w > 5 and h > 5:  # Ignorar ruido pequeño
-            char_img = img[y:y + h, x:x + w]
-            char_img = cv2.resize(char_img, (32, 32)) / 255.0
-            char_images.append(char_img)
-            bounding_boxes.append((x, y, w, h))
-
-    # Ordenar por posición horizontal
-    sorted_data = sorted(zip(bounding_boxes, char_images), key=lambda b: b[0][0])
-    if sorted_data:
+        area = w * h
+        aspect_ratio = h / w if w > 0 else 0
+        
+        candidates.append({
+            'bbox': (x, y, w, h),
+            'area': area,
+            'aspect_ratio': aspect_ratio
+        })
+    
+    if not candidates:
+        return np.array([]), []
+    
+    # Calcular estadísticas
+    areas = [c['area'] for c in candidates]
+    heights = [c['bbox'][3] for c in candidates]
+    
+    median_area = np.median(areas)
+    median_height = np.median(heights)
+    
+    # Filtros MÁS PERMISIVOS
+    min_area = max(50, median_area * 0.15)  # ← Reducido de 0.3 a 0.15
+    max_area = median_area * 10  # ← Aumentado de 4 a 10
+    
+    min_height = max(10, int(median_height * 0.4))  # ← Más permisivo
+    max_height = int(img_height * 0.98)
+    min_width = 3  # ← Reducido
+    max_width = int(img_width * 0.5)  # ← Aumentado
+    
+    # Filtrar
+    valid_candidates = []
+    for c in candidates:
+        x, y, w, h = c['bbox']
+        area = c['area']
+        aspect_ratio = c['aspect_ratio']
+        
+        # Filtros más permisivos
+        if (min_area < area < max_area and
+            min_width < w < max_width and
+            min_height < h < max_height and
+            0.2 < aspect_ratio < 6):  # ← Rango más amplio
+            
+            valid_candidates.append(c)
+    
+    print(f"✅ Caracteres válidos: {len(valid_candidates)}")
+    
+    if not valid_candidates:
+        print("⚠️ No se encontraron caracteres válidos después del filtrado")
+        
+        # FALLBACK: Si no hay caracteres válidos, ser AÚN MÁS PERMISIVO
+        print("🔄 Intentando con filtros mínimos...")
+        valid_candidates = []
+        
+        for c in candidates:
+            x, y, w, h = c['bbox']
+            
+            # Solo filtros básicos
+            if w > 5 and h > 10:
+                valid_candidates.append(c)
+        
+        print(f"   Caracteres con filtros mínimos: {len(valid_candidates)}")
+        
+        if not valid_candidates:
+            return np.array([]), []
+    
+    # Extraer caracteres
+    char_images = []
+    bounding_boxes = []
+    
+    for c in valid_candidates:
+        x, y, w, h = c['bbox']
+        
+        char_img = original[y:y + h, x:x + w]
+        char_img = add_padding(char_img, target_size=32)
+        char_img = char_img / 255.0
+        
+        char_images.append(char_img)
+        bounding_boxes.append((x, y, w, h))
+    
+    # Ordenar
+    if char_images:
+        sorted_data = sorted(zip(bounding_boxes, char_images), key=lambda b: b[0][0])
         bounding_boxes, char_images = zip(*sorted_data)
+        
         return np.array(char_images).reshape(-1, 32, 32, 1), bounding_boxes
     else:
         return np.array([]), []
 
+def add_padding(img, target_size=32):
+    """
+    Añade padding a una imagen para que tenga el tamaño objetivo sin distorsión.
+    """
+    h, w = img.shape
+    
+    # Calcular el factor de escala manteniendo el aspect ratio
+    scale = min(target_size / h, target_size / w)
+    new_h, new_w = int(h * scale), int(w * scale)
+    
+    # Redimensionar
+    resized = cv2.resize(img, (new_w, new_h))
+    
+    # Crear imagen con padding
+    padded = np.zeros((target_size, target_size), dtype=np.uint8)
+    
+    # Centrar la imagen redimensionada
+    y_offset = (target_size - new_h) // 2
+    x_offset = (target_size - new_w) // 2
+    
+    padded[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
+    
+    return padded
+
+def detect_spaces(bounding_boxes, avg_char_width_multiplier=2.0):
+    """
+    Detecta espacios entre palabras.
+    Más permisivo para escritura manuscrita.
+    """
+    if len(bounding_boxes) < 2:
+        return []
+    
+    # Calcular distancias entre caracteres consecutivos
+    gaps = []
+    for i in range(len(bounding_boxes) - 1):
+        x1_end = bounding_boxes[i][0] + bounding_boxes[i][2]
+        x2_start = bounding_boxes[i + 1][0]
+        gap = x2_start - x1_end
+        gaps.append(gap)
+    
+    if not gaps:
+        return []
+    
+    # Usar la mediana de gaps como referencia
+    median_gap = np.median(gaps)
+    
+    space_positions = []
+    for i, gap in enumerate(gaps):
+        # Si el gap es significativamente mayor que la mediana, es un espacio
+        if gap > median_gap * avg_char_width_multiplier:
+            space_positions.append(i + 1)
+    
+    return space_positions
 
 def predict_image(image_path, prediction_type, model=None):
     """Realiza predicciones para imágenes (frases o caracteres)."""
@@ -66,9 +262,17 @@ def predict_image(image_path, prediction_type, model=None):
         predictions = model.predict(char_images)
         predicted_classes = np.argmax(predictions, axis=1)
 
+        # Detectar espacios entre palabras
+        space_positions = detect_spaces(bounding_boxes)
+
         # Decodificar predicciones
         predicted_chars = []
-        for cls in predicted_classes:
+        for idx, cls in enumerate(predicted_classes):
+            # Agregar espacio si corresponde (antes del carácter actual)
+            if idx in space_positions:
+                predicted_chars.append(" ")
+            
+            # Decodificar el carácter
             if 0 <= cls <= 9:
                 predicted_chars.append(chr(cls + ord('0')))
             elif 10 <= cls <= 35:
@@ -82,18 +286,25 @@ def predict_image(image_path, prediction_type, model=None):
 
         # Visualizar predicción
         img_color = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        
+        # Dibujar rectángulos y etiquetas para cada carácter
         for (x, y, w, h), char in zip(bounding_boxes, predicted_chars):
-            cv2.rectangle(img_color, (x, y), (x + w, y + h), (0, 255, 0), 1)
-            cv2.putText(img_color, char, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            if char != " ":  # No dibujar rectángulos para espacios
+                cv2.rectangle(img_color, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(img_color, char, (x, y - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(15, 6))
         plt.imshow(cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB))
-        plt.title(f"Predicción (Frase): {predicted_phrase}")
+        plt.title(f"Predicción (Frase): {predicted_phrase}", fontsize=16, fontweight='bold')
         plt.axis("off")
+        plt.tight_layout()
         plt.show()
 
         print(f"Predicción (Frase): {predicted_phrase}")
+        print(f"Total de caracteres detectados: {len(predicted_chars)}")
         return predicted_phrase
+        
     else:
         # Predicción individual de letra o número
         img_resized = cv2.resize(img, (32, 32)) / 255.0
@@ -120,13 +331,12 @@ def predict_image(image_path, prediction_type, model=None):
 
         plt.figure(figsize=(4, 4))
         plt.imshow(img, cmap="gray")
-        plt.title(f"Predicción: {predicted_char}")
+        plt.title(f"Predicción: {predicted_char}", fontsize=14, fontweight='bold')
         plt.axis("off")
         plt.show()
 
         print(f"Predicción: Clase {predicted_class}, Carácter: {predicted_char}")
         return predicted_char
-
 
 def predict_folder(folder_path, model):
     predictions = []
@@ -178,3 +388,96 @@ def predict_folder(folder_path, model):
     else:
         print("No se procesaron imágenes válidas.")
         return 0
+
+def debug_segmentation(image_path):
+    """
+    Visualiza el preprocesamiento tipo escáner paso a paso.
+    """
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    
+    # Paso 1: Corrección de iluminación
+    kernel_size = 51
+    background = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+    img_corrected = cv2.divide(img, background, scale=255)
+    
+    # Paso 2: CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img_clahe = clahe.apply(img_corrected)
+    
+    # Paso 3: Denoise
+    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=10, templateWindowSize=7, searchWindowSize=21)
+    
+    # Paso 4: Binarización Otsu
+    _, binary = cv2.threshold(img_denoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Paso 5: Limpieza morfológica
+    kernel = np.ones((2, 2), np.uint8)
+    binary_morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    
+    # Paso 6: Eliminar ruido (componentes pequeños)
+    clean_binary = scanner_preprocess(image_path)
+    
+    # Paso 7: Contornos
+    contours, _ = cv2.findContours(clean_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    img_contours = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    
+    img_height, img_width = img.shape
+    min_area = 100
+    
+    valid_count = 0
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = w * h
+        
+        if area > min_area and h > img_height * 0.3:
+            cv2.rectangle(img_contours, (x, y), (x+w, y+h), (0, 255, 0), 3)
+            valid_count += 1
+        else:
+            cv2.rectangle(img_contours, (x, y), (x+w, y+h), (0, 0, 255), 1)
+    
+    # Visualizar
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+    
+    axes[0, 0].imshow(img, cmap='gray')
+    axes[0, 0].set_title("1. Original", fontsize=12, fontweight='bold')
+    axes[0, 0].axis('off')
+    
+    axes[0, 1].imshow(background, cmap='gray')
+    axes[0, 1].set_title("2. Fondo estimado", fontsize=12, fontweight='bold')
+    axes[0, 1].axis('off')
+    
+    axes[0, 2].imshow(img_corrected, cmap='gray')
+    axes[0, 2].set_title("3. Iluminación corregida", fontsize=12, fontweight='bold')
+    axes[0, 2].axis('off')
+    
+    axes[1, 0].imshow(img_clahe, cmap='gray')
+    axes[1, 0].set_title("4. CLAHE (contraste adaptativo)", fontsize=12, fontweight='bold')
+    axes[1, 0].axis('off')
+    
+    axes[1, 1].imshow(img_denoised, cmap='gray')
+    axes[1, 1].set_title("5. Denoising (reducción ruido)", fontsize=12, fontweight='bold')
+    axes[1, 1].axis('off')
+    
+    axes[1, 2].imshow(binary, cmap='gray')
+    axes[1, 2].set_title("6. Binarización Otsu", fontsize=12, fontweight='bold')
+    axes[1, 2].axis('off')
+    
+    axes[2, 0].imshow(binary_morph, cmap='gray')
+    axes[2, 0].set_title("7. Morfología (close)", fontsize=12, fontweight='bold')
+    axes[2, 0].axis('off')
+    
+    axes[2, 1].imshow(clean_binary, cmap='gray')
+    axes[2, 1].set_title("8. ✨ LIMPIO (componentes pequeños eliminados)", fontsize=12, fontweight='bold', color='green')
+    axes[2, 1].axis('off')
+    
+    axes[2, 2].imshow(cv2.cvtColor(img_contours, cv2.COLOR_BGR2RGB))
+    axes[2, 2].set_title(f"9. Contornos: {len(contours)} total, {valid_count} válidos", fontsize=12, fontweight='bold')
+    axes[2, 2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print(f"\n📊 ESTADÍSTICAS FINALES:")
+    print(f"   Contornos totales: {len(contours)}")
+    print(f"   Contornos válidos (verde): {valid_count}")
+    print(f"   Ruido eliminado (rojo): {len(contours) - valid_count}")
