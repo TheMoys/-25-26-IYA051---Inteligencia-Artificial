@@ -11,26 +11,23 @@ def scanner_preprocess(image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     
     # 1. Corrección de iluminación
-    kernel_size = 51
+    kernel_size = 31
     background = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
     img_corrected = cv2.divide(img, background, scale=255)
     
     # 2. CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
     img_clahe = clahe.apply(img_corrected)
     
-    # 3. Denoise más suave (NO tan agresivo)
-    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=7, templateWindowSize=7, searchWindowSize=21)
+    # 3. Denoise MUY SUAVE (preservar detalles)
+    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=5, templateWindowSize=7, searchWindowSize=21)
     
-    # 4. Binarización Otsu
+    # 4. Binarización con Otsu
     _, binary = cv2.threshold(img_denoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
     # 5. Limpieza morfológica MÁS SUAVE
-    # Solo eliminar puntos muy pequeños
-    kernel_open = np.ones((2, 2), np.uint8)  # ← Kernel más pequeño
+    kernel_open = np.ones((2, 2), np.uint8)
     binary_clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
-    
-    # NO aplicar dilate/erode adicional para no destruir las letras
     
     # 6. Eliminar componentes pequeños PERO MÁS PERMISIVO
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_clean, connectivity=8)
@@ -38,30 +35,23 @@ def scanner_preprocess(image_path):
     areas = stats[1:, cv2.CC_STAT_AREA]
     
     if len(areas) > 0:
-        # Calcular tamaño de imagen para determinar umbral adaptativo
         img_height, img_width = img.shape
         
-        # Umbral mínimo basado en tamaño de imagen (MUCHO MÁS PERMISIVO)
-        min_area_absolute = (img_height * img_width) * 0.0001  # 0.01% del área total
-        
-        # Si hay componentes grandes, usar 1% del componente más grande
+        min_area_absolute = (img_height * img_width) * 0.0001
         max_area = np.max(areas)
-        min_area_threshold = max(min_area_absolute, max_area * 0.01)  # ← MUCHO MÁS PERMISIVO
+        min_area_threshold = max(min_area_absolute, max_area * 0.01)
         
-        # Crear máscara limpia conservando componentes grandes
         clean_binary = np.zeros_like(binary_clean)
         
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
             
-            # Mantener componentes suficientemente grandes
             if area >= min_area_threshold:
                 clean_binary[labels == i] = 255
         
-        # Verificar si quedó algo
-        if np.sum(clean_binary) < 100:  # Si casi no hay píxeles blancos
+        if np.sum(clean_binary) < 100:
             print("⚠️ Limpieza demasiado agresiva, devolviendo binarización sin limpieza")
-            return binary_clean  # Devolver sin limpieza de componentes
+            return binary_clean
         
         return clean_binary
     else:
@@ -77,7 +67,7 @@ def preprocess_image(img):
     img = cv2.equalizeHist(img)
     return img
 
-def segment_image(image_path): q
+def segment_image(image_path):
     """
     Segmenta caracteres usando preprocesamiento tipo escáner.
     """
