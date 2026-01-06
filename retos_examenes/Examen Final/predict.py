@@ -6,56 +6,53 @@ import matplotlib.pyplot as plt
 
 def scanner_preprocess(image_path):
     """
-    Preprocesamiento tipo escáner profesional (versión ajustada).
+    Preprocesamiento para FOTOS manuscritas (convierte foto → imagen digitalizada).
+    Similar a escanear un documento.
     """
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     
-    # 1. Corrección de iluminación
-    kernel_size = 31
+    # 1. Corrección de iluminación desigual
+    # Estimar el fondo y dividir para normalizar
+    kernel_size = 99  # Grande para capturar iluminación general
     background = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+    
+    # Dividir la imagen por el fondo estimado
     img_corrected = cv2.divide(img, background, scale=255)
     
-    # 2. CLAHE
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+    # 2. Ecualización adaptativa de histograma (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     img_clahe = clahe.apply(img_corrected)
     
-    # 3. Denoise MUY SUAVE (preservar detalles)
-    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=5, templateWindowSize=7, searchWindowSize=21)
+    # 3. Reducción de ruido preservando bordes
+    img_denoised = cv2.fastNlMeansDenoising(img_clahe, None, h=10, templateWindowSize=7, searchWindowSize=21)
     
-    # 4. Binarización con Otsu
+    # 4. Binarización Otsu (automática)
     _, binary = cv2.threshold(img_denoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # 5. Limpieza morfológica MÁS SUAVE
-    kernel_open = np.ones((2, 2), np.uint8)
-    binary_clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
+    # 5. Limpieza morfológica SUAVE
+    kernel = np.ones((2, 2), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
     
-    # 6. Eliminar componentes pequeños PERO MÁS PERMISIVO
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_clean, connectivity=8)
+    # 6. Eliminar componentes muy pequeños (ruido)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     
+    if num_labels <= 1:
+        return binary
+    
+    # Calcular área mediana de componentes
     areas = stats[1:, cv2.CC_STAT_AREA]
+    median_area = np.median(areas)
     
-    if len(areas) > 0:
-        img_height, img_width = img.shape
-        
-        min_area_absolute = (img_height * img_width) * 0.0001
-        max_area = np.max(areas)
-        min_area_threshold = max(min_area_absolute, max_area * 0.01)
-        
-        clean_binary = np.zeros_like(binary_clean)
-        
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            
-            if area >= min_area_threshold:
-                clean_binary[labels == i] = 255
-        
-        if np.sum(clean_binary) < 100:
-            print("⚠️ Limpieza demasiado agresiva, devolviendo binarización sin limpieza")
-            return binary_clean
-        
-        return clean_binary
-    else:
-        return binary_clean
+    # Umbral: eliminar componentes < 2% del área mediana
+    min_area = max(20, median_area * 0.02)
+    
+    # Crear imagen limpia
+    clean_binary = np.zeros_like(binary)
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] >= min_area:
+            clean_binary[labels == i] = 255
+    
+    return clean_binary
 
 def preprocess_image(img):
     """
@@ -69,117 +66,80 @@ def preprocess_image(img):
 
 def segment_image(image_path):
     """
-    Segmenta caracteres usando preprocesamiento tipo escáner.
+    Segmenta caracteres detectando automáticamente el tipo de imagen.
     """
+    # Cargar imagen original
     original = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     
-    # USAR PREPROCESAMIENTO TIPO ESCÁNER
-    thresh = scanner_preprocess(image_path)
+    # DETECTAR TIPO DE IMAGEN
+    # Si la varianza de la imagen es alta → es una foto con textura
+    # Si es baja → es una imagen digitalizada limpia
+    variance = np.var(original)
+    mean_intensity = np.mean(original)
     
-    print("✅ Preprocesamiento tipo escáner completado")
+    print(f"📊 Análisis de imagen:")
+    print(f"   Varianza: {variance:.2f}")
+    print(f"   Intensidad media: {mean_intensity:.2f}")
     
-    # Encontrar contornos
+    # Umbral de decisión
+    if variance > 1000:  # Foto con mucha textura/ruido
+        print("   Tipo: 📷 FOTO manuscrita (usando preprocesamiento fuerte)")
+        thresh = scanner_preprocess(image_path)
+    else:  # Imagen limpia digitalizada
+        print("   Tipo: 📄 Imagen digitalizada (usando preprocesamiento simple)")
+        # Preprocesamiento simple
+        _, thresh = cv2.threshold(original, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Resto del código de segmentación (igual que antes)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     print(f"🔍 Contornos detectados: {len(contours)}")
     
-    if len(contours) == 0:
-        print("⚠️ No se detectaron contornos")
-        return np.array([]), []
+    # Filtros básicos
+    img_height, img_width = original.shape
     
-    # Estadísticas de imagen
-    img_height, img_width = thresh.shape
-    
-    # Recolectar candidatos
     candidates = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         area = w * h
-        aspect_ratio = h / w if w > 0 else 0
         
-        candidates.append({
-            'bbox': (x, y, w, h),
-            'area': area,
-            'aspect_ratio': aspect_ratio
-        })
+        # Filtros mínimos
+        if (w > 5 and h > 10 and 
+            h < img_height * 0.95 and
+            w < img_width * 0.5 and
+            area > 100):
+            candidates.append((x, y, w, h))
+    
+    print(f"✅ Caracteres válidos: {len(candidates)}")
     
     if not candidates:
         return np.array([]), []
     
-    # Calcular estadísticas
-    areas = [c['area'] for c in candidates]
-    heights = [c['bbox'][3] for c in candidates]
-    
-    median_area = np.median(areas)
-    median_height = np.median(heights)
-    
-    # Filtros MÁS PERMISIVOS
-    min_area = max(50, median_area * 0.15)  # ← Reducido de 0.3 a 0.15
-    max_area = median_area * 10  # ← Aumentado de 4 a 10
-    
-    min_height = max(10, int(median_height * 0.4))  # ← Más permisivo
-    max_height = int(img_height * 0.98)
-    min_width = 3  # ← Reducido
-    max_width = int(img_width * 0.5)  # ← Aumentado
-    
-    # Filtrar
-    valid_candidates = []
-    for c in candidates:
-        x, y, w, h = c['bbox']
-        area = c['area']
-        aspect_ratio = c['aspect_ratio']
-        
-        # Filtros más permisivos
-        if (min_area < area < max_area and
-            min_width < w < max_width and
-            min_height < h < max_height and
-            0.2 < aspect_ratio < 6):  # ← Rango más amplio
-            
-            valid_candidates.append(c)
-    
-    print(f"✅ Caracteres válidos: {len(valid_candidates)}")
-    
-    if not valid_candidates:
-        print("⚠️ No se encontraron caracteres válidos después del filtrado")
-        
-        # FALLBACK: Si no hay caracteres válidos, ser AÚN MÁS PERMISIVO
-        print("🔄 Intentando con filtros mínimos...")
-        valid_candidates = []
-        
-        for c in candidates:
-            x, y, w, h = c['bbox']
-            
-            # Solo filtros básicos
-            if w > 5 and h > 10:
-                valid_candidates.append(c)
-        
-        print(f"   Caracteres con filtros mínimos: {len(valid_candidates)}")
-        
-        if not valid_candidates:
-            return np.array([]), []
+    # Ordenar por posición horizontal
+    candidates = sorted(candidates, key=lambda b: b[0])
     
     # Extraer caracteres
     char_images = []
     bounding_boxes = []
     
-    for c in valid_candidates:
-        x, y, w, h = c['bbox']
-        
+    for (x, y, w, h) in candidates:
+        # Extraer del original
         char_img = original[y:y + h, x:x + w]
-        char_img = add_padding(char_img, target_size=32)
+        
+        # Detectar si es fondo blanco o negro
+        if np.mean(char_img) > 127:
+            char_img = 255 - char_img  # Invertir
+        
+        # Redimensionar a 32x32
+        char_img = cv2.resize(char_img, (32, 32))
+        
+        # Normalizar
         char_img = char_img / 255.0
         
         char_images.append(char_img)
         bounding_boxes.append((x, y, w, h))
     
-    # Ordenar
-    if char_images:
-        sorted_data = sorted(zip(bounding_boxes, char_images), key=lambda b: b[0][0])
-        bounding_boxes, char_images = zip(*sorted_data)
-        
-        return np.array(char_images).reshape(-1, 32, 32, 1), bounding_boxes
-    else:
-        return np.array([]), []
+    return np.array(char_images).reshape(-1, 32, 32, 1), bounding_boxes
 
 def add_padding(img, target_size=32):
     """
