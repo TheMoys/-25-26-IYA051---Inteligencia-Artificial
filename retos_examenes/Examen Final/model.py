@@ -1,30 +1,45 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-def create_optimized_model(input_shape, num_classes, use_dropout=False, l2_reg=0.001):
+def create_optimized_model(input_shape, num_classes, use_dropout=True, l2_reg=0.0):
+    """
+    Modelo más robusto para 62 clases.
+    """
     model = models.Sequential([
-        layers.Conv2D(16, (3, 3), activation='relu', input_shape=input_shape),
-        layers.BatchNormalization(),  # Normalización por lotes
-        layers.MaxPooling2D((2, 2)),
-
-        layers.Conv2D(64, (3, 3), activation='relu'),
+        # Bloque 1
+        layers.Conv2D(64, (3, 3), activation="relu", padding='same', input_shape=input_shape),
+        layers.BatchNormalization(),
+        layers.Conv2D(64, (3, 3), activation="relu", padding='same'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-
-        layers.Conv2D(128, (3, 3), activation='relu'),
+        layers.Dropout(0.25) if use_dropout else layers.Layer(),
+        
+        # Bloque 2
+        layers.Conv2D(128, (3, 3), activation="relu", padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(128, (3, 3), activation="relu", padding='same'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-
+        layers.Dropout(0.25) if use_dropout else layers.Layer(),
+        
+        # Bloque 3
+        layers.Conv2D(256, (3, 3), activation="relu", padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.25) if use_dropout else layers.Layer(),
+        
+        # Dense layers
         layers.Flatten(),
-        layers.Dropout(0.3) if use_dropout else layers.Layer(),  # Dropout ajustado
-        layers.Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(l2_reg)),
-        layers.Dense(num_classes, activation='softmax')
+        layers.Dense(512, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(l2_reg)),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5) if use_dropout else layers.Layer(),
+        
+        layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(l2_reg)),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5) if use_dropout else layers.Layer(),
+        
+        # Salida
+        layers.Dense(num_classes, activation="softmax")
     ])
-    
-    model.compile(
-        optimizer='adam',
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
     
     return model
