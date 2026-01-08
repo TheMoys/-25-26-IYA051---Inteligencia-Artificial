@@ -3,6 +3,25 @@ import cv2
 import numpy as np
 from PIL import Image
 
+# Importar el nuevo preprocesamiento
+try:
+    from advanced_preprocessing import advanced_char_preprocessing
+except ImportError:
+    # Fallback al preprocesamiento anterior
+    def advanced_char_preprocessing(img_array, target_size=(32, 32), debug=False):
+        if len(img_array.shape) == 3:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+        
+        img_resized = cv2.resize(img_array, target_size)
+        mean_intensity = np.mean(img_resized)
+        
+        if mean_intensity > 127:
+            img_normalized = (255 - img_resized) / 255.0
+        else:
+            img_normalized = img_resized / 255.0
+        
+        return img_normalized.astype(np.float32)
+
 # Mapeo CORRECTO y UNIFICADO
 LABEL_MAP = {
     # Números 0-9 (labels 0-9)
@@ -21,38 +40,15 @@ CHAR_TO_LABEL = {v: k for k, v in LABEL_MAP.items()}
 
 IMG_SIZE = (32, 32)
 
-
-def preprocess_char_unified(img_array):
+# Usar el nuevo preprocesamiento como función unificada
+def preprocess_char_unified(img_array, debug=False):
     """
-    Preprocesamiento UNIFICADO para caracteres individuales.
-    Esta función se usa TANTO en entrenamiento como en predicción.
+    Preprocesamiento UNIFICADO mejorado.
     """
-    # Asegurar que es escala de grises
-    if len(img_array.shape) == 3:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
-    
-    # Redimensionar a 32x32
-    img_resized = cv2.resize(img_array, IMG_SIZE)
-    
-    # Detectar si es fondo blanco o negro
-    mean_intensity = np.mean(img_resized)
-    
-    if mean_intensity > 127:  # Fondo blanco, texto negro
-        # Invertir para que sea fondo negro, texto blanco
-        img_normalized = (255 - img_resized) / 255.0
-    else:  # Ya está con fondo negro, texto blanco
-        img_normalized = img_resized / 255.0
-    
-    # Aplicar umbralización para limpiar
-    img_normalized = np.where(img_normalized > 0.3, 1.0, 0.0)
-    
-    return img_normalized.astype(np.float32)
+    return advanced_char_preprocessing(img_array, IMG_SIZE, debug=debug)
 
-
+# Resto del código igual...
 def extract_label_universal(filename):
-    """
-    Extrae etiqueta del nombre de archivo - TODOS LOS FORMATOS
-    """
     try:
         # FORMATO 1: DATASET_IA (0_Nombre.png, A_Nombre.png, a_Nombre.png)
         if len(filename) > 1 and filename[1] == '_':
@@ -75,7 +71,6 @@ def extract_label_universal(filename):
             if len(parts) >= 2:
                 num_str = parts[1].split('.')[0]
                 img_index = int(num_str)
-                # Mapeo: 1-10 → 0-9, 11-36 → A-Z (10-35), 37-62 → a-z (36-61)
                 if 1 <= img_index <= 10:
                     return img_index - 1
                 elif 11 <= img_index <= 36:
@@ -87,11 +82,7 @@ def extract_label_universal(filename):
     except:
         return None
 
-
 def load_dataset(dataset_path, dataset_type="new"):
-    """
-    Carga dataset con preprocesamiento UNIFICADO.
-    """
     images = []
     labels = []
     
@@ -113,21 +104,19 @@ def load_dataset(dataset_path, dataset_type="new"):
     for filename in files:
         filepath = os.path.join(dataset_path, filename)
         
-        # Extraer label
         label = extract_label_universal(filename)
         if label is None:
             error_count += 1
             continue
         
         try:
-            # Cargar imagen
             img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 error_count += 1
                 continue
             
-            # PREPROCESAR con función UNIFICADA
-            img_processed = preprocess_char_unified(img)
+            # NUEVO: usar preprocesamiento mejorado
+            img_processed = preprocess_char_unified(img, debug=False)
             
             images.append(img_processed)
             labels.append(label)
@@ -140,7 +129,6 @@ def load_dataset(dataset_path, dataset_type="new"):
     print(f"   ✅ Cargadas: {loaded_count}")
     print(f"   ❌ Errores: {error_count}")
     
-    # Convertir a arrays
     images_array = np.array(images).reshape(-1, IMG_SIZE[0], IMG_SIZE[1], 1)
     labels_array = np.array(labels)
     
@@ -148,8 +136,7 @@ def load_dataset(dataset_path, dataset_type="new"):
     
     return images_array, labels_array
 
-
-# Funciones legacy para compatibilidad
+# Funciones legacy
 def extract_label_from_old_format(img_name):
     return extract_label_universal(img_name)
 

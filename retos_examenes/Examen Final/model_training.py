@@ -36,23 +36,22 @@ def train_model():
     # ============================================================================
     print("\n📂 CARGANDO DATASETS...")
     
-    # Dataset 1: Tipografías digitales
-    print("\n1️⃣  Cargando DatasetCompleto2 (tipografías digitales)...")
+    # Dataset 1: Tipografías digitales 
     images1, labels1 = load_dataset("./dataset/DatasetCompleto2", dataset_type="new")
-    print(f"    ✓ Cargadas {images1.shape[0]} imágenes")
     
     # Dataset 2: Manuscritas digitalizadas
-    print("\n2️⃣  Cargando datasetCompleto (manuscritas digitalizadas)...")
-    images2, labels2 = load_dataset("./dataset/datasetCompleto", dataset_type="old")
-    print(f"    ✓ Cargadas {images2.shape[0]} imágenes")
+    images2, labels2 = load_dataset("./dataset/datasetCompleto", dataset_type="old") 
+    
+    # Dataset 3: Manuscritas reales
+    images3, labels3 = load_dataset("./dataset/DATASET_IA", dataset_type="ia")
     
     # ============================================================================
     # PASO 2: COMBINAR TODOS LOS DATASETS PRIMERO
     # ============================================================================
     print("\n🔀 COMBINANDO TODOS LOS DATASETS...")
     
-    all_images = np.concatenate([images1, images2], axis=0)
-    all_labels = np.concatenate([labels1, labels2], axis=0)
+    all_images = np.concatenate([images1, images2, images3], axis=0)
+    all_labels = np.concatenate([labels1, labels2, labels3], axis=0)
     
     print(f"    ✓ Total imágenes combinadas: {all_images.shape[0]}")
     
