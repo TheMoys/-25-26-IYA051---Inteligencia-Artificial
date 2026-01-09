@@ -1,4 +1,5 @@
 import cv2
+import os
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -43,12 +44,21 @@ except ImportError:
     
     advanced_char_preprocessing = preprocess_char_unified
 
-
-def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
+def predict_universal(image_path, model_path="ocr_model.h5", debug=False):
     """
-    Segmentación y predicción mejorada para manuscritas y digitales.
+    Función universal que detecta automáticamente y procesa:
+    - Letras individuales
+    - Palabras 
+    - Frases completas
+    
+    Aplica todas las mejoras de corrección y segmentación.
     """
     print(f"\n🔍 Procesando: {image_path}")
+    
+    # NUEVO: Verificar que el archivo existe
+    if not os.path.exists(image_path):
+        print(f"❌ Error: No se encuentra el archivo '{image_path}'")
+        return "", []
     
     # Cargar modelo
     try:
@@ -58,13 +68,28 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
         print(f"❌ Error cargando modelo: {e}")
         return "", []
     
-    # Redimensionamiento automático
+    # MEJORADO: Redimensionamiento con mejor manejo de errores
     try:
         original = smart_resize_for_ocr(image_path)
+        if original is None:
+            raise ValueError("smart_resize_for_ocr devolvió None")
         print(f"📐 Imagen procesada: {original.shape[1]}x{original.shape[0]}")
     except Exception as e:
         print(f"⚠️ Error en redimensionamiento: {e}")
-        original = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        print("🔄 Intentando carga básica...")
+        try:
+            original = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if original is None:
+                print(f"❌ Error: No se puede leer la imagen '{image_path}'")
+                print("💡 Verifica que:")
+                print("   - El archivo existe")
+                print("   - Es una imagen válida (.png, .jpg, .jpeg)")
+                print("   - Tienes permisos de lectura")
+                return "", []
+            print(f"📐 Imagen cargada básicamente: {original.shape[1]}x{original.shape[0]}")
+        except Exception as e2:
+            print(f"❌ Error crítico cargando imagen: {e2}")
+            return "", []
     
     # Detectar tipo de escritura
     variance = np.var(original)
@@ -72,6 +97,9 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
     h, w = original.shape
     
     print(f"📝 Tipo detectado: {'Manuscrita' if is_handwritten else 'Digital'} (varianza: {variance:.1f})")
+    
+    # El resto del código permanece igual...
+    # [CONTINÚA CON TODA LA LÓGICA ANTERIOR]
     
     # Preprocesamiento adaptativo según tipo
     if is_handwritten:
@@ -126,16 +154,28 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
             aspect_range[0] <= aspect_ratio <= aspect_range[1]):
             char_boxes.append((x, y, cw, ch))
     
-    print(f"🔍 Caracteres detectados: {len(char_boxes)}")
+    num_chars = len(char_boxes)
+    print(f"🔍 Caracteres detectados: {num_chars}")
     
     if not char_boxes:
         print("⚠️ No se encontraron caracteres válidos")
         return "", []
     
-    # Función de ordenamiento inteligente
+    # NUEVA: Detección automática del tipo de contenido
+    if num_chars == 1:
+        content_type = "letra_individual"
+        print("🔤 Contenido detectado: LETRA INDIVIDUAL")
+    elif 2 <= num_chars <= 6:
+        content_type = "palabra"
+        print("📝 Contenido detectado: PALABRA")
+    else:
+        content_type = "frase"
+        print("📄 Contenido detectado: FRASE")
+    
+    # Función de ordenamiento inteligente (solo para palabras y frases)
     def smart_sort(boxes):
         """Ordena caracteres considerando múltiples líneas."""
-        if not boxes:
+        if not boxes or content_type == "letra_individual":
             return boxes
         
         # Calcular tolerancia basada en altura promedio
@@ -193,7 +233,7 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
         char_img = original[y_start:y_end, x_start:x_end]
         
         # Preprocesamiento inicial
-        char_processed = advanced_char_preprocessing(char_img, debug=(i < 2))
+        char_processed = advanced_char_preprocessing(char_img, debug=(debug and i < 2))
         
         # Preparar para predicción
         char_input = char_processed.reshape(1, 32, 32, 1)
@@ -205,8 +245,9 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
         
         # USAR PREPROCESAMIENTO ESPECIALIZADO para manuscritas con baja confianza
         if is_handwritten and enhance_handwriting is not None and confidence < 0.6:
-            print(f"   📝 Usando preprocesamiento especializado para manuscrita")
-            char_processed_special = enhance_handwriting(char_img, debug=(i < 2))
+            if debug:
+                print(f"   📝 Usando preprocesamiento especializado para manuscrita")
+            char_processed_special = enhance_handwriting(char_img, debug=(debug and i < 2))
             char_input_special = char_processed_special.reshape(1, 32, 32, 1)
             
             prediction_special = model.predict(char_input_special, verbose=0)
@@ -216,7 +257,8 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
                 prediction = prediction_special
                 predicted_class = np.argmax(prediction)
                 confidence = confidence_special
-                print(f"   ✅ Mejora con preprocesamiento especializado: {confidence:.1%}")
+                if debug:
+                    print(f"   ✅ Mejora con preprocesamiento especializado: {confidence:.1%}")
         
         # Si la confianza es MUY baja, intentar preprocesamiento alternativo
         elif confidence < 0.3:
@@ -235,7 +277,8 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
                 prediction = prediction_alt
                 predicted_class = np.argmax(prediction)
                 confidence = confidence_alt
-                print(f"   🔄 Preprocesamiento alternativo aplicado a carácter {i+1}")
+                if debug:
+                    print(f"   🔄 Preprocesamiento alternativo aplicado a carácter {i+1}")
         
         # Decodificar
         predicted_char = LABEL_MAP.get(predicted_class, '?')
@@ -245,54 +288,78 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
         
         print(f"   Carácter {i+1}: '{predicted_char}' (conf: {confidence:.1%})")
     
-    # Detección de espacios mejorada
-    phrase = ""
-    if len(char_boxes) > 1:
-        char_widths = [w for _, _, w, _ in char_boxes]
-        avg_char_width = np.mean(char_widths)
-        
-        for i, char in enumerate(predicted_chars):
-            phrase += char
-            
-            # Si no es el último carácter
-            if i < len(char_boxes) - 1:
-                current_box = char_boxes[i]
-                next_box = char_boxes[i + 1]
-                
-                # Calcular gaps
-                current_right = current_box[0] + current_box[2]
-                next_left = next_box[0]
-                horizontal_gap = next_left - current_right
-                
-                current_bottom = current_box[1] + current_box[3]
-                next_top = next_box[1]
-                vertical_gap = next_top - current_bottom
-                
-                # Umbrales adaptativos
-                space_threshold = avg_char_width * 0.7
-                
-                # Detectar salto de línea o espacio
-                avg_height = np.mean([b[3] for b in char_boxes])
-                if vertical_gap > avg_height * 0.3:  # Nueva línea
-                    phrase += " "
-                elif horizontal_gap > space_threshold:  # Espacio horizontal
-                    phrase += " "
-    else:
+    # NUEVA: Construcción de resultado adaptativa según tipo de contenido
+    if content_type == "letra_individual":
+        # Para letra individual: sin espacios, sin detección de espacios
         phrase = "".join(predicted_chars)
+        
+    elif content_type == "palabra":
+        # Para palabra: sin detección de espacios internos
+        phrase = "".join(predicted_chars)
+        
+    else:  # frase
+        # Para frase: detección completa de espacios
+        phrase = ""
+        if len(char_boxes) > 1:
+            char_widths = [w for _, _, w, _ in char_boxes]
+            avg_char_width = np.mean(char_widths)
+            
+            for i, char in enumerate(predicted_chars):
+                phrase += char
+                
+                # Si no es el último carácter
+                if i < len(char_boxes) - 1:
+                    current_box = char_boxes[i]
+                    next_box = char_boxes[i + 1]
+                    
+                    # Calcular gaps
+                    current_right = current_box[0] + current_box[2]
+                    next_left = next_box[0]
+                    horizontal_gap = next_left - current_right
+                    
+                    current_bottom = current_box[1] + current_box[3]
+                    next_top = next_box[1]
+                    vertical_gap = next_top - current_bottom
+                    
+                    # Umbrales adaptativos
+                    space_threshold = avg_char_width * 0.7
+                    
+                    # Detectar salto de línea o espacio
+                    avg_height = np.mean([b[3] for b in char_boxes])
+                    if vertical_gap > avg_height * 0.3:  # Nueva línea
+                        phrase += " "
+                    elif horizontal_gap > space_threshold:  # Espacio horizontal
+                        phrase += " "
+        else:
+            phrase = "".join(predicted_chars)
     
-    # Limpiar espacios múltiples
-    phrase = ' '.join(phrase.split())
+    # Limpiar espacios múltiples (solo para frases)
+    if content_type == "frase":
+        phrase = ' '.join(phrase.split())
     
-    # Aplicar corrección inteligente
+    # NUEVA: Aplicar corrección inteligente según tipo de contenido
     if custom_corrector is not None:
-        print(f"   🔧 Aplicando corrección inteligente...")
-        corrected_phrase = custom_corrector.correct_text(phrase, debug=True)
-        if corrected_phrase != phrase:
-            phrase = corrected_phrase
+        if content_type == "letra_individual":
+            # Para letra individual: solo correcciones básicas de caracteres
+            original_phrase = phrase
+            if len(phrase) == 1:
+                # Correcciones simples: 0→o, 1→l, etc.
+                basic_corrections = {'0': 'o', '1': 'l', '5': 's'}
+                if phrase in basic_corrections:
+                    phrase = basic_corrections[phrase]
+                    if debug:
+                        print(f"   🔤 Corrección de letra: '{original_phrase}' → '{phrase}'")
+        else:
+            # Para palabras y frases: corrección completa
+            if debug:
+                print(f"   🔧 Aplicando corrección inteligente...")
+            corrected_phrase = custom_corrector.correct_text(phrase, debug=debug)
+            if corrected_phrase != phrase:
+                phrase = corrected_phrase
     
     print(f"\n📝 Resultado final: '{phrase}'")
     
-    # Visualización mejorada
+    # Visualización mejorada con tipo de contenido
     fig, ax = plt.subplots(1, 1, figsize=(16, 8))
     ax.imshow(original, cmap='gray')
     
@@ -316,7 +383,10 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
                 color='blue', ha='center', va='bottom',
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.9))
     
-    ax.set_title(f'Predicción (Frase): {phrase}', fontsize=18, fontweight='bold')
+    # Título con tipo de contenido
+    content_emoji = {"letra_individual": "🔤", "palabra": "📝", "frase": "📄"}
+    title = f'{content_emoji[content_type]} Predicción ({content_type.replace("_", " ").title()}): {phrase}'
+    ax.set_title(title, fontsize=18, fontweight='bold')
     ax.axis('off')
     
     plt.tight_layout()
@@ -324,59 +394,7 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
     
     return phrase, char_boxes
 
-
-def predict_image(image_path, prediction_type, model=None):
-    if prediction_type == "phrase":
-        phrase, boxes = segment_and_predict_unified(image_path)
-        return phrase
-    
-    if model is None:
-        model = tf.keras.models.load_model("ocr_model.h5")
-    
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    img_processed = preprocess_char_unified(img)
-    img_input = img_processed.reshape(1, 32, 32, 1)
-    
-    prediction = model.predict(img_input, verbose=0)
-    predicted_class = np.argmax(prediction)
-    predicted_char = LABEL_MAP.get(predicted_class, '?')
-    
-    if prediction_type == "number":
-        if predicted_char.isdigit():
-            return predicted_char
-        else:
-            return "No es un número"
-    elif prediction_type == "letter":
-        return predicted_char
-    
-    return predicted_char
-
-
-def predict_folder(folder_path, model):
-    import os
-    
-    if not os.path.exists(folder_path):
-        print(f"❌ No existe la carpeta: {folder_path}")
-        return 0
-    
-    image_files = [f for f in os.listdir(folder_path) 
-                   if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    
-    print(f"\n📂 Procesando {len(image_files)} imágenes en {folder_path}")
-    
-    for filename in image_files[:5]:  # Primeras 5
-        filepath = os.path.join(folder_path, filename)
-        print(f"\n{'='*60}")
-        print(f"Procesando: {filename}")
-        
-        try:
-            phrase, _ = segment_and_predict_unified(filepath)
-            print(f"✅ Resultado: '{phrase}'")
-        except Exception as e:
-            print(f"❌ Error: {e}")
-    
-    return 85
-
-
-def debug_segmentation(image_path):
-    segment_and_predict_unified(image_path)
+# ELIMINADAS todas las funciones antiguas:
+# - predict_image() ❌ ELIMINADA
+# - predict_folder() ❌ ELIMINADA  
+# - debug_segmentation() ❌ ELIMINADA

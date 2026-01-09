@@ -4,7 +4,7 @@ import tensorflow as tf
 import os
 import sys
 from model_training import train_model
-from predict import predict_image, predict_folder, segment_and_predict_unified
+from predict import predict_universal 
 
 
 def check_and_create_model():
@@ -50,104 +50,54 @@ def train_interface():
             messagebox.showerror("Error", f"Error durante el re-entrenamiento:\n{str(e)}")
 
 
-def debug_interface():
+def predict_universal_gui():
     """
-    Debug de segmentación.
-    """
-    if not check_and_create_model():
-        return
-        
-    image_path = filedialog.askopenfilename(
-        title="Selecciona una imagen para debug",
-        filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tiff")]
-    )
-    if image_path:
-        print(f"🔍 Analizando: {image_path}")
-        try:
-            segment_and_predict_unified(image_path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error en debug:\n{str(e)}")
-
-
-def predict_letter():
-    """
-    Predice una letra individual.
+    NUEVA: Función universal que detecta automáticamente el tipo de contenido.
     """
     if not check_and_create_model():
         return
         
     image_path = filedialog.askopenfilename(
-        title="Selecciona imagen de una letra",
+        title="Selecciona una imagen con texto (letra, palabra o frase)",
         filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tiff")]
     )
     if image_path:
         try:
-            prediction = predict_image(image_path, "letter")
-            print(f"Predicción (Letra): {prediction}")
-            messagebox.showinfo("Resultado", f"Letra predicha: {prediction}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error en predicción:\n{str(e)}")
-
-
-def predict_number():
-    """
-    Predice un número individual.
-    """
-    if not check_and_create_model():
-        return
-        
-    image_path = filedialog.askopenfilename(
-        title="Selecciona imagen de un número",
-        filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tiff")]
-    )
-    if image_path:
-        try:
-            prediction = predict_image(image_path, "number")
-            print(f"Predicción (Número): {prediction}")
-            messagebox.showinfo("Resultado", f"Número predicho: {prediction}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error en predicción:\n{str(e)}")
-
-
-def predict_phrase():
-    """
-    Predice una frase completa.
-    """
-    if not check_and_create_model():
-        return
-        
-    image_path = filedialog.askopenfilename(
-        title="Selecciona imagen con texto",
-        filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.bmp *.tiff")]
-    )
-    if image_path:
-        try:
-            prediction, _ = segment_and_predict_unified(image_path)
-            print(f"Predicción (Frase): {prediction}")
-            messagebox.showinfo("Resultado", f"Texto predicho:\n\n{prediction}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error en predicción:\n{str(e)}")
-
-
-def predict_from_folder():
-    """
-    Predice múltiples imágenes de una carpeta.
-    """
-    if not check_and_create_model():
-        return
-        
-    folder_path = filedialog.askdirectory(title="Selecciona la carpeta de imágenes")
-    if folder_path:
-        try:
-            model = tf.keras.models.load_model("ocr_model.h5")
-            accuracy = predict_folder(folder_path, model)
-            if accuracy > 0:
-                print(f"Precisión calculada: {accuracy:.2f}%")
-                messagebox.showinfo("Resultado", f"Procesamiento completo.\nPrecisión: {accuracy:.2f}%")
+            print(f"🔍 Procesando: {image_path}")
+            
+            # Preguntar si quiere modo debug
+            debug_response = messagebox.askyesno(
+                "Modo Debug", 
+                "¿Activar modo debug para ver detalles del procesamiento?"
+            )
+            
+            # Usar la nueva función universal
+            prediction, boxes = predict_universal(image_path, debug=debug_response)
+            
+            print(f"✅ Resultado: '{prediction}'")
+            
+            # Mostrar resultado con información del tipo detectado
+            num_chars = len(boxes)
+            if num_chars == 1:
+                content_type = "LETRA INDIVIDUAL"
+                emoji = "🔤"
+            elif 2 <= num_chars <= 6:
+                content_type = "PALABRA"
+                emoji = "📝"
             else:
-                messagebox.showwarning("Sin resultados", "No se procesaron imágenes válidas.")
+                content_type = "FRASE"
+                emoji = "📄"
+            
+            # Ventana de resultado mejorada
+            result_message = f"{emoji} Tipo detectado: {content_type}\n"
+            result_message += f"🔍 Caracteres encontrados: {num_chars}\n"
+            result_message += f"📝 Texto reconocido:\n\n'{prediction}'"
+            
+            messagebox.showinfo("Resultado del Reconocimiento", result_message)
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Error procesando carpeta:\n{str(e)}")
+            messagebox.showerror("Error", f"Error en el reconocimiento:\n{str(e)}")
+            print(f"❌ Error: {e}")
 
 
 def main():
@@ -166,92 +116,96 @@ def main():
             image_path = sys.argv[2]
             if os.path.exists(image_path):
                 print(f"🔍 Prediciendo: {image_path}")
-                phrase, _ = segment_and_predict_unified(image_path)
+                phrase, _ = predict_universal(image_path, debug=True)
                 print(f"\n✅ RESULTADO FINAL: '{phrase}'")
             else:
                 print(f"❌ No existe el archivo: {image_path}")
                 
-        elif command == "predict_folder" and len(sys.argv) >= 3:
-            folder_path = sys.argv[2]
-            if os.path.exists(folder_path):
-                try:
-                    model = tf.keras.models.load_model("ocr_model.h5")
-                    accuracy = predict_folder(folder_path, model)
-                    print(f"\n✅ Precisión final: {accuracy:.2f}%")
-                except Exception as e:
-                    print(f"❌ Error: {e}")
-            else:
-                print(f"❌ No existe la carpeta: {folder_path}")
-                
         else:
             print("Uso:")
-            print("  python main.py train                     - Entrenar modelo")
-            print("  python main.py predict <imagen>          - Predecir imagen")
-            print("  python main.py predict_folder <carpeta>  - Predecir carpeta")
+            print("  python main.py train                - Entrenar modelo")
+            print("  python main.py predict <imagen>     - Predecir imagen")
         
         return
     
-    # Modo GUI
+    # NUEVA GUI SIMPLIFICADA
     root = tk.Tk()
-    root.title("OCR Predictor - Actualizado")
-    root.geometry("350x400")
+    root.title("OCR Universal - Sistema Inteligente")
+    root.geometry("400x350")
     root.resizable(False, False)
     
-    # Título
-    title_label = tk.Label(root, text="🔤 OCR Predictor", font=("Arial", 16, "bold"), fg="darkblue")
-    title_label.pack(pady=10)
+    # Configurar colores y estilo
+    root.configure(bg='#f0f0f0')
     
-    # Verificar modelo al inicio
+    # Título principal
+    title_label = tk.Label(root, text="🔤 OCR UNIVERSAL", 
+                          font=("Arial", 18, "bold"), 
+                          fg="#2c3e50", bg='#f0f0f0')
+    title_label.pack(pady=15)
+    
+    # Subtítulo descriptivo
+    subtitle_label = tk.Label(root, text="Reconocimiento automático de texto\n✨ Detecta letras, palabras y frases", 
+                             font=("Arial", 11), 
+                             fg="#34495e", bg='#f0f0f0')
+    subtitle_label.pack(pady=5)
+    
+    # Estado del modelo
     if not os.path.exists("ocr_model.h5"):
-        status_label = tk.Label(root, text="⚠️ Modelo no encontrado", fg="red")
+        status_label = tk.Label(root, text="⚠️ Modelo no encontrado", 
+                               fg="red", bg='#f0f0f0', font=("Arial", 10))
         status_label.pack()
     else:
-        status_label = tk.Label(root, text="✅ Modelo cargado", fg="green")
+        status_label = tk.Label(root, text="✅ Modelo listo", 
+                               fg="green", bg='#f0f0f0', font=("Arial", 10))
         status_label.pack()
     
-    # Botón de DEBUG destacado
-    button_debug = tk.Button(root, text="🔍 Debug Segmentación", command=debug_interface, 
-                           bg="lightblue", font=("Arial", 11, "bold"), width=25)
-    button_debug.pack(pady=10)
+    # Separador
+    separator1 = tk.Frame(root, height=2, bg="#bdc3c7")
+    separator1.pack(fill=tk.X, padx=30, pady=15)
+    
+    # BOTÓN PRINCIPAL - RECONOCIMIENTO UNIVERSAL
+    button_predict = tk.Button(root, text="🎯 RECONOCER TEXTO", 
+                              command=predict_universal_gui,
+                              bg="#3498db", fg="white", 
+                              font=("Arial", 14, "bold"), 
+                              width=25, height=2,
+                              relief=tk.RAISED, bd=3)
+    button_predict.pack(pady=15)
+    
+    # Descripción del botón principal
+    desc_label = tk.Label(root, text="Detecta automáticamente:\n🔤 Letras individuales  📝 Palabras  📄 Frases\n✍️ Texto manuscrito y digital", 
+                         font=("Arial", 9), 
+                         fg="#7f8c8d", bg='#f0f0f0', justify="center")
+    desc_label.pack(pady=10)
     
     # Separador
-    separator1 = tk.Label(root, text="─" * 35, fg="gray")
-    separator1.pack()
+    separator2 = tk.Frame(root, height=1, bg="#ecf0f1")
+    separator2.pack(fill=tk.X, padx=50, pady=10)
     
-    # Botón de entrenamiento
-    button_train = tk.Button(root, text="🔄 Re-entrenar Modelo", command=train_interface, 
-                           bg="orange", font=("Arial", 10), width=25)
+    # Botón de entrenamiento (secundario)
+    button_train = tk.Button(root, text="🔄 Re-entrenar Modelo", 
+                           command=train_interface,
+                           bg="#e67e22", fg="white", 
+                           font=("Arial", 10), 
+                           width=20, height=1)
     button_train.pack(pady=5)
     
-    # Separador
-    separator2 = tk.Label(root, text="─" * 35, fg="gray")
-    separator2.pack()
-    
-    # Etiqueta de predicciones
-    pred_label = tk.Label(root, text="Predicciones:", font=("Arial", 12, "bold"))
-    pred_label.pack(pady=(10, 5))
-    
-    # Botones de predicción
-    button_letter = tk.Button(root, text="📝 Predecir Letra", command=predict_letter, 
-                            width=25, font=("Arial", 10))
-    button_letter.pack(pady=3)
-    
-    button_number = tk.Button(root, text="🔢 Predecir Número", command=predict_number, 
-                            width=25, font=("Arial", 10))
-    button_number.pack(pady=3)
-    
-    button_phrase = tk.Button(root, text="📄 Predecir Frase", command=predict_phrase, 
-                            width=25, font=("Arial", 10), bg="lightgreen")
-    button_phrase.pack(pady=3)
-    
-    button_folder = tk.Button(root, text="📁 Predecir Carpeta", command=predict_from_folder, 
-                            width=25, font=("Arial", 10))
-    button_folder.pack(pady=3)
-    
     # Información adicional
-    info_label = tk.Label(root, text="Tip: Usa 'Debug Segmentación' para\nanalizar cómo procesa las imágenes", 
-                         font=("Arial", 9), fg="gray", justify="center")
-    info_label.pack(pady=15)
+    info_frame = tk.Frame(root, bg='#f0f0f0')
+    info_frame.pack(pady=15)
+    
+    info_label = tk.Label(info_frame, 
+                         text="💡 Tip: La función universal analiza automáticamente\nel contenido y aplica el procesamiento óptimo", 
+                         font=("Arial", 9), 
+                         fg="#95a5a6", bg='#f0f0f0', 
+                         justify="center")
+    info_label.pack()
+    
+    # Footer
+    footer_label = tk.Label(root, text="v2.0 - Sistema OCR Inteligente", 
+                           font=("Arial", 8), 
+                           fg="#bdc3c7", bg='#f0f0f0')
+    footer_label.pack(side=tk.BOTTOM, pady=5)
     
     root.mainloop()
 
