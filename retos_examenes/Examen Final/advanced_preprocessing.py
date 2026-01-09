@@ -87,60 +87,67 @@ def advanced_char_preprocessing(img_array, target_size=(32, 32), debug=False):
     
     return resized_normalized.astype(np.float32)
 
-
 def intelligent_segmentation(image_path, debug=False):
     """
-    Segmentación inteligente que evita partir caracteres.
+    Segmentación mejorada para manuscritas.
     """
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    
-    # Preprocesamiento inicial
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(img)
-    
-    # Binarización
-    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    # Operaciones morfológicas para conectar partes de caracteres
-    kernel_connect = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    binary_connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_connect)
-    
-    # Encontrar contornos
-    contours, _ = cv2.findContours(binary_connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+    # NUEVO: Usar redimensionamiento automático
+    img = smart_resize_for_ocr(image_path)
     h, w = img.shape
     
-    # Filtros más inteligentes
-    valid_boxes = []
+    # Detectar tipo (manuscrita vs digital)
+    variance = np.var(img)
+    is_handwritten = variance > 800
     
+    if debug:
+        print(f"Tipo: {'Manuscrita' if is_handwritten else 'Digital'}")
+    
+    # Preprocesamiento según tipo
+    if is_handwritten:
+        # Manuscritas: más permisivo
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(img)
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    else:
+        # Digitales: estándar
+        _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Encontrar contornos
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filtros adaptativos
+    boxes = []
     for contour in contours:
         x, y, cw, ch = cv2.boundingRect(contour)
         area = cw * ch
-        aspect_ratio = cw / ch if ch > 0 else 0
         
-        # Filtros adaptativos basados en tamaño de imagen
-        min_area = max(50, (h * w) * 0.0001)  # Mínimo 0.01% del área total
-        max_area = (h * w) * 0.1  # Máximo 10% del área total
+        if is_handwritten:
+            # Filtros más permisivos para manuscritas
+            min_area = 20
+            min_dimension = 5
+            max_width = w * 0.5
+            max_height = h * 0.9
+        else:
+            # Filtros estrictos para digitales
+            min_area = 50
+            min_dimension = 8
+            max_width = w * 0.3
+            max_height = h * 0.8
         
-        min_dimension = max(8, min(h, w) * 0.02)  # Mínimo 2% de la dimensión menor
-        max_width = w * 0.3  # Máximo 30% del ancho
-        max_height = h * 0.8  # Máximo 80% del alto
-        
-        if (area >= min_area and area <= max_area and
-            cw >= min_dimension and ch >= min_dimension and
-            cw <= max_width and ch <= max_height and
-            0.1 <= aspect_ratio <= 3.0):  # Aspect ratio razonable
-            valid_boxes.append((x, y, cw, ch))
+        if (area >= min_area and cw >= min_dimension and ch >= min_dimension and
+            cw <= max_width and ch <= max_height):
+            boxes.append((x, y, cw, ch))
     
     if debug:
         debug_img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        for x, y, cw, ch in valid_boxes:
+        for x, y, cw, ch in boxes:
             cv2.rectangle(debug_img, (x, y), (x+cw, y+ch), (0, 255, 0), 2)
         
-        plt.figure(figsize=(15, 6))
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(12, 6))
         plt.imshow(debug_img)
-        plt.title(f'Segmentación inteligente - {len(valid_boxes)} caracteres detectados')
+        plt.title(f'Segmentación mejorada - {len(boxes)} caracteres')
         plt.axis('off')
         plt.show()
     
-    return valid_boxes, img
+    return boxes, img
