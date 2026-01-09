@@ -5,6 +5,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from dataset import LABEL_MAP, preprocess_char_unified
 
+try:
+    from custom_corrector import custom_corrector
+except ImportError:
+    custom_corrector = None
+
 # Importar mejoras de manuscritas
 try:
     from handwriting_enhancer import enhance_handwriting
@@ -278,7 +283,14 @@ def segment_and_predict_unified(image_path, model_path="ocr_model.h5"):
     # Limpiar espacios múltiples
     phrase = ' '.join(phrase.split())
     
-    print(f"\n📝 Resultado: '{phrase}'")
+    # Aplicar corrección inteligente
+    if custom_corrector is not None:
+        print(f"   🔧 Aplicando corrección inteligente...")
+        corrected_phrase = custom_corrector.correct_text(phrase, debug=True)
+        if corrected_phrase != phrase:
+            phrase = corrected_phrase
+    
+    print(f"\n📝 Resultado final: '{phrase}'")
     
     # Visualización mejorada
     fig, ax = plt.subplots(1, 1, figsize=(16, 8))
