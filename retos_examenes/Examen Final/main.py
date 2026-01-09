@@ -138,16 +138,10 @@ def main():
     root.configure(bg='#f0f0f0')
     
     # Título principal
-    title_label = tk.Label(root, text="🔤 OCR UNIVERSAL", 
+    title_label = tk.Label(root, text="🔤 OCR", 
                           font=("Arial", 18, "bold"), 
                           fg="#2c3e50", bg='#f0f0f0')
     title_label.pack(pady=15)
-    
-    # Subtítulo descriptivo
-    subtitle_label = tk.Label(root, text="Reconocimiento automático de texto\n✨ Detecta letras, palabras y frases", 
-                             font=("Arial", 11), 
-                             fg="#34495e", bg='#f0f0f0')
-    subtitle_label.pack(pady=5)
     
     # Estado del modelo
     if not os.path.exists("ocr_model.h5"):
@@ -172,12 +166,6 @@ def main():
                               relief=tk.RAISED, bd=3)
     button_predict.pack(pady=15)
     
-    # Descripción del botón principal
-    desc_label = tk.Label(root, text="Detecta automáticamente:\n🔤 Letras individuales  📝 Palabras  📄 Frases\n✍️ Texto manuscrito y digital", 
-                         font=("Arial", 9), 
-                         fg="#7f8c8d", bg='#f0f0f0', justify="center")
-    desc_label.pack(pady=10)
-    
     # Separador
     separator2 = tk.Frame(root, height=1, bg="#ecf0f1")
     separator2.pack(fill=tk.X, padx=50, pady=10)
@@ -190,22 +178,19 @@ def main():
                            width=20, height=1)
     button_train.pack(pady=5)
     
-    # Información adicional
+    # Información adicional CON CONDICIONES ÓPTIMAS
     info_frame = tk.Frame(root, bg='#f0f0f0')
     info_frame.pack(pady=15)
     
     info_label = tk.Label(info_frame, 
-                         text="💡 Tip: La función universal analiza automáticamente\nel contenido y aplica el procesamiento óptimo", 
-                         font=("Arial", 9), 
-                         fg="#95a5a6", bg='#f0f0f0', 
+                         text="🎯 CONDICIONES ÓPTIMAS:\n" +
+                              "✅ Fondo blanco, texto negro • 🔤 Letra de imprenta\n" +
+                              "📐 Tamaño mínimo 50px • 📊 Alto contraste\n" +
+                              "❌ Evitar: cursiva, fondos complejos, bajo contraste", 
+                         font=("Arial", 8), 
+                         fg="#34495e", bg='#f0f0f0', 
                          justify="center")
     info_label.pack()
-    
-    # Footer
-    footer_label = tk.Label(root, text="v2.0 - Sistema OCR Inteligente", 
-                           font=("Arial", 8), 
-                           fg="#bdc3c7", bg='#f0f0f0')
-    footer_label.pack(side=tk.BOTTOM, pady=5)
     
     root.mainloop()
 
